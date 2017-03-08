@@ -4,6 +4,7 @@ import (
 	"Lunnel/msg"
 	"crypto/sha1"
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	rawLog "log"
 	"net"
@@ -81,6 +82,7 @@ func LoadConfig(configFile string) error {
 	if len(cliConf.Tunnels) == 0 {
 		return errors.New("you must specify at least one tunnel")
 	}
+	fmt.Println(cliConf)
 	return nil
 }
 

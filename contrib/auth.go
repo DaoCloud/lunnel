@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 )
 
 var daoUrl *url.URL
@@ -16,16 +15,16 @@ func InitAuth(authUrl string) error {
 	var err error
 	daoUrl, err = url.Parse(authUrl)
 	if err != nil {
-		return false, fmt.Errorf("DAOKEEPER_URL Parse error %s,%v", daokeeper, err)
+		return fmt.Errorf("DAOKEEPER_URL Parse error %s,%v", authUrl, err)
 	}
 	daoUrl.Path = "/v1/ngrokd/auth"
 	return nil
 }
 
 func Auth(authToken string) (bool, error) {
-	resp, err := http.PostForm(u.String(), url.Values{"user": {authToken}})
+	resp, err := http.PostForm(daoUrl.String(), url.Values{"user": {authToken}})
 	if err != nil {
-		return false, fmt.Errorf("Request daokeeper error %s,%v", u.String(), err)
+		return false, fmt.Errorf("Request daokeeper error %s,%v", daoUrl.String(), err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == 200 {

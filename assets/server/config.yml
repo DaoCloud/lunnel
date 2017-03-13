@@ -1,2 +1,2 @@
-encrypt_mode: "tls"
-server_domain: "lunnel.snakeoil.com"
+encrypt_mode: "aes"
+server_domain: "127.0.0.1"

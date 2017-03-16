@@ -1,2 +1,3 @@
 encrypt_mode: "aes"
-server_domain: "127.0.0.1"
+server_domain: "tunnel.daocloud.co"
+port: 4443

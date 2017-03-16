@@ -1,5 +1,5 @@
 trusted_cert: "../assets/client/cacert.pem"
-server_addr: "127.0.0.1:8080"
+server_addr: "lunnel.snakeoil.com:8080"
 tunnels: 
   docker: 
     proto: "tcp"

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+
+	log "github.com/Sirupsen/logrus"
 )
 
 var daoUrl *url.URL
@@ -28,8 +30,10 @@ func Auth(authToken string) (bool, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == 200 {
+		log.WithFields(log.Fields{"authtoken": authToken}).Infoln("client auth token success!")
 		return true, nil
 	} else {
+		log.WithFields(log.Fields{"authtoken": authToken, "statuscode": resp.StatusCode}).Errorln("client auth token failed!")
 		return false, fmt.Errorf("Response daokeeper code %d,%v", resp.StatusCode)
 	}
 	return true, nil

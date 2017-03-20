@@ -1,11 +1,15 @@
 package contrib
 
 import (
+	"fmt"
+	"time"
+
 	log "github.com/Sirupsen/logrus"
 	"gopkg.in/redis.v5"
 )
 
 var redisCli *redis.Client
+var keyPrefix = "ngrok"
 
 func InitNotify(notifyUrl string) error {
 	if notifyUrl == "" {
@@ -27,17 +31,19 @@ func InitNotify(notifyUrl string) error {
 }
 
 func AddMember(domain string, member string) error {
-	cmd := redisCli.SAdd(domain, member)
+	cmd := redisCli.SAdd(fmt.Sprintf("%s.%s", keyPrefix, domain), member)
 	if cmd.Err() != nil {
 		return cmd.Err()
 	}
+	log.WithFields(log.Fields{"key": fmt.Sprintf("%s.%s", keyPrefix, domain), "member": member}).Debugln("redis add pub url success!")
 	return nil
 }
 
 func RemoveMember(domain string, member string) error {
-	cmd := redisCli.SRem(domain, member)
+	cmd := redisCli.SRem(fmt.Sprintf("%s.%s", keyPrefix, domain), member)
 	if cmd.Err() != nil {
 		return cmd.Err()
 	}
+	log.WithFields(log.Fields{"key": fmt.Sprintf("%s.%s", keyPrefix, domain), "member": member}).Debugln("redis remove pub url success!")
 	return nil
 }

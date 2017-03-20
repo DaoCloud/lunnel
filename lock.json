@@ -1,5 +1,5 @@
 {
-    "memo": "a398918adabe386988a1aa558332a150931444c98fb900a4e8a65759eae00f65",
+    "memo": "b5aa43eb5702002d4eca7796ed97479e56fbf75f26097ce4a4e0c9538e6c9e14",
     "projects": [
         {
             "name": "github.com/Sirupsen/logrus",
@@ -43,8 +43,8 @@
         },
         {
             "name": "github.com/xtaci/kcp-go",
-            "version": "v2.21",
-            "revision": "bf95749e1be2a3f152ba0004eae0c4f47fbf1251",
+            "version": "v3.7",
+            "revision": "0f3b8d2b55c20ca9b5065a30428473737552492e",
             "packages": [
                 "."
             ]

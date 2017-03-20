@@ -1,20 +1,21 @@
 package contrib
 
 import (
-	"fmt"
-	"time"
-
 	log "github.com/Sirupsen/logrus"
 	"gopkg.in/redis.v5"
 )
 
 var redisCli *redis.Client
-var keyPrefix = "ngrok"
+var notifyKey string
 
-func InitNotify(notifyUrl string) error {
+func InitNotify(notifyUrl string, nk string) error {
 	if notifyUrl == "" {
-		log.Fatalln("redisAddr is empty")
+		log.Fatalln("notifyUrl is empty")
 	}
+	if nk == "" {
+		log.Fatalln("notifyKey is empty")
+	}
+	notifyKey = nk
 	redisCli = redis.NewClient(&redis.Options{
 		Addr:     notifyUrl,
 		Password: "", // no password set
@@ -27,23 +28,28 @@ func InitNotify(notifyUrl string) error {
 		return err
 	}
 	log.WithFields(log.Fields{"pong": pong}).Infoln("init Notify,ping redis success!")
+	cmd := redisCli.Del(notifyKey)
+	if cmd.Err() != nil {
+		log.WithFields(log.Fields{"err": cmd.Err()}).Errorln("init redis,delete key failed!")
+		return cmd.Err()
+	}
 	return nil
 }
 
 func AddMember(domain string, member string) error {
-	cmd := redisCli.SAdd(fmt.Sprintf("%s.%s", keyPrefix, domain), member)
+	cmd := redisCli.SAdd(notifyKey, member)
 	if cmd.Err() != nil {
 		return cmd.Err()
 	}
-	log.WithFields(log.Fields{"key": fmt.Sprintf("%s.%s", keyPrefix, domain), "member": member}).Debugln("redis add pub url success!")
+	log.WithFields(log.Fields{"key": notifyKey, "member": member}).Debugln("redis add pub url success!")
 	return nil
 }
 
 func RemoveMember(domain string, member string) error {
-	cmd := redisCli.SRem(fmt.Sprintf("%s.%s", keyPrefix, domain), member)
+	cmd := redisCli.SRem(notifyKey, member)
 	if cmd.Err() != nil {
 		return cmd.Err()
 	}
-	log.WithFields(log.Fields{"key": fmt.Sprintf("%s.%s", keyPrefix, domain), "member": member}).Debugln("redis remove pub url success!")
+	log.WithFields(log.Fields{"key": notifyKey, "member": member}).Debugln("redis remove pub url success!")
 	return nil
 }

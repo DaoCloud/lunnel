@@ -3,8 +3,8 @@
     "projects": [
         {
             "name": "github.com/Sirupsen/logrus",
-            "version": "v0.11.4",
-            "revision": "0208149b40d863d2c1a2f8fe5753096a9cf2cc8b",
+            "version": "v0.11.5",
+            "revision": "ba1b36c82c5e05c4f912a88eab0dcd91a171688f",
             "packages": [
                 "."
             ]
@@ -52,7 +52,7 @@
         {
             "name": "golang.org/x/crypto",
             "branch": "master",
-            "revision": "728b753d0135da6801d45a38e6f43ff55779c5c2",
+            "revision": "459e26527287adbc2adcc5d0d49abff9a5f315a7",
             "packages": [
                 "blowfish",
                 "cast5",
@@ -67,7 +67,7 @@
         {
             "name": "golang.org/x/net",
             "branch": "master",
-            "revision": "d379faa25cbdc04d653984913a2ceb43b0bc46d7",
+            "revision": "a6577fac2d73be281a500b310739095313165611",
             "packages": [
                 "bpf",
                 "internal/iana",
@@ -78,7 +78,7 @@
         {
             "name": "golang.org/x/sys",
             "branch": "master",
-            "revision": "d67a3279aecd76a65c4c9e6c352c888f5b3a574a",
+            "revision": "99f16d856c9836c42d24e7ab64ea72916925fa97",
             "packages": [
                 "unix"
             ]

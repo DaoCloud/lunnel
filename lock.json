@@ -1,5 +1,9 @@
 {
+<<<<<<< HEAD
     "memo": "b5aa43eb5702002d4eca7796ed97479e56fbf75f26097ce4a4e0c9538e6c9e14",
+=======
+    "memo": "99667e343b448ce09d7d7688cb4849d359fd2f2812a29867bbac0189fd9be6d6",
+>>>>>>> b0f968cec2140d79cc2d84c600f25ac6d91f9fe6
     "projects": [
         {
             "name": "github.com/Sirupsen/logrus",

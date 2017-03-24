@@ -307,9 +307,16 @@ func (c *Control) moderator() {
 			}
 		}
 		if serverConf.NotifyEnable {
-			err := contrib.RemoveMember(serverConf.ServerDomain, fmt.Sprintf("%s://%s:%d", t.tunnelConfig.Protocol, t.tunnelConfig.Hostname, t.tunnelConfig.RemotePort))
-			if err != nil {
-				log.WithFields(log.Fields{"err": err}).Errorln("notify remove member failed!")
+			if t.tunnelConfig.Subdomain == "http" || t.tunnelConfig.Subdomain == "https" {
+				err := contrib.RemoveMember(serverConf.ServerDomain, fmt.Sprintf("%s://%s.%s:%d", t.tunnelConfig.Protocol, t.tunnelConfig.Subdomain, t.tunnelConfig.Hostname, t.tunnelConfig.RemotePort))
+				if err != nil {
+					log.WithFields(log.Fields{"err": err}).Errorln("notify remove member failed!")
+				}
+			} else {
+				err := contrib.RemoveMember(serverConf.ServerDomain, fmt.Sprintf("%s://%s:%d", t.tunnelConfig.Protocol, t.tunnelConfig.Hostname, t.tunnelConfig.RemotePort))
+				if err != nil {
+					log.WithFields(log.Fields{"err": err}).Errorln("notify remove member failed!")
+				}
 			}
 		}
 	}

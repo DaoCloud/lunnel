@@ -1,9 +1,5 @@
 {
-<<<<<<< HEAD
-    "memo": "b5aa43eb5702002d4eca7796ed97479e56fbf75f26097ce4a4e0c9538e6c9e14",
-=======
-    "memo": "99667e343b448ce09d7d7688cb4849d359fd2f2812a29867bbac0189fd9be6d6",
->>>>>>> b0f968cec2140d79cc2d84c600f25ac6d91f9fe6
+    "memo": "425fcec93da495303f15c80a448934e791b95bfc38fa39c7761b3c30281cffbd",
     "projects": [
         {
             "name": "github.com/Sirupsen/logrus",
@@ -38,6 +34,13 @@
             ]
         },
         {
+            "name": "github.com/longXboy/smux",
+            "revision": "9c97aa9117464d9101996f3c08e06b17480ffe2f",
+            "packages": [
+                "."
+            ]
+        },
+        {
             "name": "github.com/pkg/errors",
             "version": "v0.8.0",
             "revision": "645ef00459ed84a119197bfb8d8205042c6df63d",
@@ -47,8 +50,8 @@
         },
         {
             "name": "github.com/xtaci/kcp-go",
-            "version": "v3.7",
-            "revision": "0f3b8d2b55c20ca9b5065a30428473737552492e",
+            "version": "v3.11",
+            "revision": "af68a93e677c27321b7c23f7baab167aafbe9d4d",
             "packages": [
                 "."
             ]
@@ -71,7 +74,7 @@
         {
             "name": "golang.org/x/net",
             "branch": "master",
-            "revision": "a6577fac2d73be281a500b310739095313165611",
+            "revision": "6c23252515492caf9b228a9d5cabcdbde29f7f82",
             "packages": [
                 "bpf",
                 "internal/iana",
@@ -82,7 +85,7 @@
         {
             "name": "golang.org/x/sys",
             "branch": "master",
-            "revision": "99f16d856c9836c42d24e7ab64ea72916925fa97",
+            "revision": "afadfcc7779c1f4db0f6f6438afcb108d9c9c7cd",
             "packages": [
                 "unix"
             ]

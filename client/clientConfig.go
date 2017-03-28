@@ -1,7 +1,6 @@
 package main
 
 import (
-	"Lunnel/msg"
 	"crypto/sha1"
 	"encoding/json"
 	"fmt"
@@ -12,6 +11,7 @@ import (
 	"strings"
 
 	log "github.com/Sirupsen/logrus"
+	"github.com/longXboy/Lunnel/msg"
 	"github.com/pkg/errors"
 	"golang.org/x/crypto/pbkdf2"
 	"gopkg.in/yaml.v2"
@@ -25,13 +25,17 @@ type Config struct {
 	ServerName  string `yaml:"server_name,omitempty"`
 	TrustedCert string `yaml:"trusted_cert,omitempty"`
 	SecretKey   string `yaml:"secret_key,omitempty"`
-	//none:means no encrypt
-	//aes:means exchange premaster key in aes mode
-	//tls:means exchange premaster key in tls mode
-	//default value is tls
+	//none:no encryption
+	//aes:encrpted by aes
+	//tls:encrpted by tls,which is default
 	EncryptMode string                      `yaml:"encrypt_mode,omitempty"`
 	Tunnels     map[string]msg.TunnelConfig `yaml:"tunnels"`
-	AuthToken   string                      `yaml:"auth_token"`
+	AuthToken   string                      `yaml:"auth_token,omitempty"`
+	//mix: switch between kcp and tcp automatically,which is default
+	//kcp: communicate with server in kcp
+	//tcp: communicate with server in tcp
+	Transport string `yaml:"transport,omitempty"`
+	HttpProxy string `yaml:"http_proxy,omitempty"`
 }
 
 var cliConf Config
@@ -62,7 +66,7 @@ func LoadConfig(configFile string) error {
 	}
 	if cliConf.EncryptMode == "aes" {
 		if cliConf.SecretKey == "" {
-			cliConf.SecretKey = "defaultpassword"
+			log.Fatalln("client can't start AES mode without configuring SecretKey")
 		}
 		pass := pbkdf2.Key([]byte(cliConf.SecretKey), []byte("lunnel"), 4096, 32, sha1.New)
 		cliConf.SecretKey = string(pass[:16])
@@ -78,7 +82,19 @@ func LoadConfig(configFile string) error {
 		}
 	}
 	if len(cliConf.Tunnels) == 0 {
-		return errors.New("you must specify at least one tunnel")
+		log.Warningln("no proxying tunnels sepcified")
+	}
+	if cliConf.Transport == "" {
+		cliConf.Transport = "mix"
+	} else if cliConf.Transport != "kcp" && cliConf.Transport != "tcp" && cliConf.Transport != "mix" {
+		return errors.Errorf("invalid transport mode:%s", cliConf.Transport)
+	}
+	if (os.Getenv("http_proxy") != "" || os.Getenv("HTTP_PROXY") != "") && cliConf.HttpProxy == "" {
+		if os.Getenv("http_proxy") != "" {
+			cliConf.HttpProxy = os.Getenv("http_proxy")
+		} else if os.Getenv("HTTP_PROXY") != "" {
+			cliConf.HttpProxy = os.Getenv("HTTP_PROXY")
+		}
 	}
 	fmt.Println(cliConf)
 	return nil

@@ -1,5 +1,7 @@
-{}
-<<<<<<< HEAD
-
-=======
->>>>>>> b0f968cec2140d79cc2d84c600f25ac6d91f9fe6
+{
+    "dependencies": {
+        "github.com/longXboy/smux": {
+            "revision": "9c97aa9117464d9101996f3c08e06b17480ffe2f"
+        }
+    }
+}

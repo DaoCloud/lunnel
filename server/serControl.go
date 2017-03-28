@@ -1,11 +1,6 @@
 package main
 
 import (
-	"Lunnel/contrib"
-	"Lunnel/crypto"
-	"Lunnel/msg"
-	"Lunnel/smux"
-	"Lunnel/util"
 	"fmt"
 	"io"
 	"net"
@@ -14,6 +9,11 @@ import (
 	"time"
 
 	log "github.com/Sirupsen/logrus"
+	"github.com/longXboy/Lunnel/contrib"
+	"github.com/longXboy/Lunnel/crypto"
+	"github.com/longXboy/Lunnel/msg"
+	"github.com/longXboy/Lunnel/util"
+	"github.com/longXboy/smux"
 	"github.com/pkg/errors"
 )
 
@@ -29,11 +29,8 @@ var ControlMap = make(map[crypto.UUID]*Control)
 
 var subDomainIdx uint64
 
-var HttpMapLock sync.RWMutex
-var HttpMap = make(map[string]*Tunnel)
-
-var HttpsMapLock sync.RWMutex
-var HttpsMap = make(map[string]*Tunnel)
+var TunnelMapLock sync.RWMutex
+var TunnelMap = make(map[string]*Tunnel)
 
 func NewControl(conn net.Conn, encryptMode string) *Control {
 	ctl := &Control{
@@ -44,6 +41,7 @@ func NewControl(conn net.Conn, encryptMode string) *Control {
 		toDie:       make(chan struct{}),
 		writeChan:   make(chan writeReq, 128),
 		encryptMode: encryptMode,
+		tunnels:     make(map[string]*Tunnel, 0),
 	}
 	return ctl
 }
@@ -60,6 +58,21 @@ type Tunnel struct {
 	ctl          *Control
 }
 
+func (t Tunnel) Close() {
+	if t.listener != nil {
+		t.listener.Close()
+	}
+	TunnelMapLock.Lock()
+	delete(TunnelMap, t.tunnelConfig.RemoteAddr())
+	TunnelMapLock.Unlock()
+	if serverConf.NotifyEnable {
+		err := contrib.RemoveMember(serverConf.ServerDomain, t.tunnelConfig.RemoteAddr())
+		if err != nil {
+			log.WithFields(log.Fields{"err": err}).Errorln("notify remove member failed!")
+		}
+	}
+}
+
 type pipeNode struct {
 	prev *pipeNode
 	next *pipeNode
@@ -68,7 +81,8 @@ type pipeNode struct {
 
 type Control struct {
 	ctlConn         net.Conn
-	tunnels         []*Tunnel
+	tunnels         map[string]*Tunnel
+	tunnelLock      sync.Mutex
 	preMasterSecret []byte
 	lastRead        uint64
 	encryptMode     string
@@ -291,35 +305,11 @@ func (c *Control) moderator() {
 	_ = <-c.toDie
 	log.WithFields(log.Fields{"ClientId": c.ClientID}).Infoln("client going to close")
 	close(c.die)
+	c.tunnelLock.Lock()
 	for _, t := range c.tunnels {
-		if t.listener != nil {
-			t.listener.Close()
-		} else {
-			domain := fmt.Sprintf("%s.%s", t.tunnelConfig.Subdomain, t.tunnelConfig.Hostname)
-			if t.tunnelConfig.Protocol == "http" {
-				HttpMapLock.Lock()
-				delete(HttpMap, domain)
-				HttpMapLock.Unlock()
-			} else {
-				HttpsMapLock.Lock()
-				delete(HttpsMap, domain)
-				HttpsMapLock.Unlock()
-			}
-		}
-		if serverConf.NotifyEnable {
-			if t.tunnelConfig.Subdomain == "http" || t.tunnelConfig.Subdomain == "https" {
-				err := contrib.RemoveMember(serverConf.ServerDomain, fmt.Sprintf("%s://%s.%s:%d", t.tunnelConfig.Protocol, t.tunnelConfig.Subdomain, t.tunnelConfig.Hostname, t.tunnelConfig.RemotePort))
-				if err != nil {
-					log.WithFields(log.Fields{"err": err}).Errorln("notify remove member failed!")
-				}
-			} else {
-				err := contrib.RemoveMember(serverConf.ServerDomain, fmt.Sprintf("%s://%s:%d", t.tunnelConfig.Protocol, t.tunnelConfig.Hostname, t.tunnelConfig.RemotePort))
-				if err != nil {
-					log.WithFields(log.Fields{"err": err}).Errorln("notify remove member failed!")
-				}
-			}
-		}
+		t.Close()
 	}
+	c.tunnelLock.Unlock()
 	idle := c.idlePipes
 	for {
 		if idle == nil {
@@ -349,7 +339,7 @@ func (c *Control) recvLoop() {
 		if c.IsClosed() {
 			return
 		}
-		mType, _, err := msg.ReadMsgWithoutTimeout(c.ctlConn)
+		mType, body, err := msg.ReadMsgWithoutTimeout(c.ctlConn)
 		if err != nil {
 			log.WithFields(log.Fields{"err": err}).Warningln("ReadMsgWithoutTimeout failed")
 			c.Close()
@@ -358,6 +348,8 @@ func (c *Control) recvLoop() {
 
 		atomic.StoreUint64(&c.lastRead, uint64(time.Now().UnixNano()))
 		switch mType {
+		case msg.TypeAddTunnels:
+			go c.ServerAddTunnels(body.(*msg.AddTunnels))
 		case msg.TypePong:
 		case msg.TypePing:
 			c.writeChan <- writeReq{msg.TypePong, nil}
@@ -423,13 +415,13 @@ func (c *Control) Serve() {
 	}
 }
 
-func proxyConn(userConn net.Conn, c *Control, tunnelLocalAddr string) {
+func proxyConn(userConn net.Conn, c *Control, tunnelName string) {
 	defer userConn.Close()
 	p := c.getPipe()
 	if p == nil {
 		return
 	}
-	stream, err := p.OpenStream(tunnelLocalAddr)
+	stream, err := p.OpenStream(tunnelName)
 	if err != nil {
 		c.putPipe(p)
 		return
@@ -453,27 +445,33 @@ func proxyConn(userConn net.Conn, c *Control, tunnelLocalAddr string) {
 	return
 }
 
-func (c *Control) ServerSyncTunnels(serverDomain string) error {
-	_, body, err := msg.ReadMsg(c.ctlConn)
-	if err != nil {
-		return errors.Wrap(err, "ReadMsg sstm")
-	}
-	sstm := body.(*msg.SyncTunnels)
+//add or update tunnel stat
+func (c *Control) ServerAddTunnels(sstm *msg.AddTunnels) {
 	for name, _ := range sstm.Tunnels {
-		tempTunnel := sstm.Tunnels[name]
-		tempTunnel.Hostname = serverDomain
-		var lis net.Listener
-		if tempTunnel.Protocol == "tcp" || tempTunnel.Protocol == "udp" {
-			if tempTunnel.Protocol == "tcp" {
-				lis, err = net.Listen("tcp", fmt.Sprintf("%s:0", serverConf.ListenIP))
-				if err != nil {
-					return errors.Wrap(err, "binding TCP listener")
-				}
-			} else {
-				lis, err = net.Listen("udp", fmt.Sprintf("%s:0", serverConf.ListenIP))
-				if err != nil {
-					return errors.Wrap(err, "binding udp listener")
-				}
+		if c.IsClosed() {
+			return
+		}
+		var lis net.Listener = nil
+		var err error
+		c.tunnelLock.Lock()
+		oldTunnel, isok := c.tunnels[name]
+		if isok {
+			oldTunnel.Close()
+			delete(c.tunnels, name)
+		}
+		c.tunnelLock.Unlock()
+		tunnelConfig := sstm.Tunnels[name]
+		selfHost := false
+		if tunnelConfig.Hostname == "" {
+			tunnelConfig.Hostname = serverConf.ServerDomain
+			selfHost = true
+		}
+		if tunnelConfig.Protocol == "tcp" || tunnelConfig.Protocol == "udp" {
+			lis, err = net.Listen(tunnelConfig.Protocol, fmt.Sprintf("%s:%d", serverConf.ListenIP, tunnelConfig.RemotePort))
+			if err != nil {
+				log.WithFields(log.Fields{"remote_addr": tunnelConfig.RemoteAddr(), "client_id": c.ClientID}).Warningln("forbidden,remote port already in use")
+				c.writeChan <- writeReq{msg.TypeError, msg.Error{fmt.Sprintf("add tunnels failed!forbidden,remote addrs(%s) already in use", tunnelConfig.RemoteAddr())}}
+				continue
 			}
 			go func(tunnelName string) {
 				for {
@@ -487,50 +485,45 @@ func (c *Control) ServerSyncTunnels(serverDomain string) error {
 					go proxyConn(conn, c, tunnelName)
 				}
 			}(name)
+			//todo: port should  allocated and managed by server not by OS
 			addr := lis.Addr().(*net.TCPAddr)
-			tempTunnel.RemotePort = uint16(addr.Port)
-			tunnel := Tunnel{tunnelConfig: tempTunnel, listener: lis, ctl: c, tunnelName: name}
-			c.tunnels = append(c.tunnels, &tunnel)
-		} else if tempTunnel.Protocol == "http" || tempTunnel.Protocol == "https" {
-			subDomain := util.Int2Short(atomic.AddUint64(&subDomainIdx, 1))
-			tempTunnel.Subdomain = string(subDomain)
-			httpAddr := fmt.Sprintf("%s.%s", subDomain, serverConf.ServerDomain)
-			if tempTunnel.Protocol == "http" {
-				tempTunnel.RemotePort = serverConf.HttpPort
-				tunnel := Tunnel{tunnelConfig: tempTunnel, listener: nil, ctl: c, tunnelName: name}
-				c.tunnels = append(c.tunnels, &tunnel)
-				HttpMapLock.Lock()
-				HttpMap[httpAddr] = &tunnel
-				HttpMapLock.Unlock()
+			tunnelConfig.RemotePort = uint16(addr.Port)
+		} else if tunnelConfig.Protocol == "http" || tunnelConfig.Protocol == "https" {
+			if tunnelConfig.Subdomain == "" && selfHost {
+				subDomain := util.Int2Short(atomic.AddUint64(&subDomainIdx, 1))
+				tunnelConfig.Subdomain = string(subDomain)
+			}
+			if tunnelConfig.Protocol == "http" {
+				tunnelConfig.RemotePort = serverConf.HttpPort
 			} else {
-				tempTunnel.RemotePort = serverConf.HttpsPort
-				tunnel := Tunnel{tunnelConfig: tempTunnel, listener: nil, ctl: c, tunnelName: name}
-				c.tunnels = append(c.tunnels, &tunnel)
-				HttpsMapLock.Lock()
-				HttpsMap[httpAddr] = &tunnel
-				HttpsMapLock.Unlock()
+				tunnelConfig.RemotePort = serverConf.HttpsPort
 			}
 		}
-		sstm.Tunnels[name] = tempTunnel
+		tunnel := Tunnel{tunnelConfig: tunnelConfig, listener: lis, ctl: c, tunnelName: name}
+		TunnelMapLock.Lock()
+		_, isok = TunnelMap[tunnelConfig.RemoteAddr()]
+		if isok {
+			TunnelMapLock.Unlock()
+			log.WithFields(log.Fields{"remote_addr": tunnelConfig.RemoteAddr(), "client_id": c.ClientID}).Warningln("forbidden,remote addrs already in use")
+			c.writeChan <- writeReq{msg.TypeError, msg.Error{fmt.Sprintf("add tunnels failed!forbidden,remote addrs(%s) already in use", tunnelConfig.RemoteAddr())}}
+			continue
+		}
+		TunnelMap[tunnelConfig.RemoteAddr()] = &tunnel
+		TunnelMapLock.Unlock()
+		c.tunnelLock.Lock()
+		c.tunnels[name] = &tunnel
+		c.tunnelLock.Unlock()
+		sstm.Tunnels[name] = tunnelConfig
+
 		if serverConf.NotifyEnable {
-			if tempTunnel.Protocol == "http" || tempTunnel.Protocol == "https" {
-				err = contrib.AddMember(serverConf.ServerDomain, fmt.Sprintf("%s://%s.%s:%d", tempTunnel.Protocol, tempTunnel.Subdomain, tempTunnel.Hostname, tempTunnel.RemotePort))
-				if err != nil {
-					log.WithFields(log.Fields{"err": err}).Errorln("notify add member failed!")
-				}
-			} else {
-				err = contrib.AddMember(serverConf.ServerDomain, fmt.Sprintf("%s://%s:%d", tempTunnel.Protocol, tempTunnel.Hostname, tempTunnel.RemotePort))
-				if err != nil {
-					log.WithFields(log.Fields{"err": err}).Errorln("notify add member failed!")
-				}
+			err = contrib.AddMember(serverConf.ServerDomain, tunnelConfig.RemoteAddr())
+			if err != nil {
+				log.WithFields(log.Fields{"err": err}).Errorln("notify add member failed!")
 			}
 		}
 	}
-	err = msg.WriteMsg(c.ctlConn, msg.TypeSyncTunnels, *sstm)
-	if err != nil {
-		return errors.Wrap(err, "WriteMsg sstm")
-	}
-	return nil
+	c.writeChan <- writeReq{msg.TypeAddTunnels, *sstm}
+	return
 }
 
 func (c *Control) GenerateClientId() crypto.UUID {

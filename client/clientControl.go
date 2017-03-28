@@ -1,33 +1,35 @@
 package main
 
 import (
-	"Lunnel/crypto"
-	"Lunnel/msg"
-	"Lunnel/smux"
-	"Lunnel/util"
 	"crypto/tls"
-	"fmt"
 	"io"
 	"net"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	log "github.com/Sirupsen/logrus"
+	"github.com/longXboy/Lunnel/crypto"
+	"github.com/longXboy/Lunnel/msg"
+	"github.com/longXboy/Lunnel/transport"
+	"github.com/longXboy/Lunnel/util"
+	"github.com/longXboy/smux"
 	"github.com/pkg/errors"
 )
 
 var pingInterval time.Duration = time.Second * 8
 var pingTimeout time.Duration = time.Second * 17
 
-func NewControl(conn net.Conn, encryptMode string) *Control {
+func NewControl(conn net.Conn, encryptMode string, transport string) *Control {
 	ctl := &Control{
-		ctlConn:     conn,
-		die:         make(chan struct{}),
-		toDie:       make(chan struct{}),
-		writeChan:   make(chan writeReq, 128),
-		encryptMode: encryptMode,
+		ctlConn:       conn,
+		die:           make(chan struct{}),
+		toDie:         make(chan struct{}),
+		writeChan:     make(chan writeReq, 128),
+		encryptMode:   encryptMode,
+		tunnels:       make(map[string]msg.TunnelConfig, 0),
+		transportMode: transport,
 	}
-	ctl.tunnels = cliConf.Tunnels
 	return ctl
 }
 
@@ -38,10 +40,12 @@ type writeReq struct {
 
 type Control struct {
 	ctlConn         net.Conn
+	tunnelLock      sync.Mutex
 	tunnels         map[string]msg.TunnelConfig
 	preMasterSecret []byte
 	lastRead        uint64
 	encryptMode     string
+	transportMode   string
 
 	die       chan struct{}
 	toDie     chan struct{}
@@ -76,7 +80,7 @@ func (c *Control) moderator() {
 
 func (c *Control) createPipe() {
 	log.WithField("time", time.Now().Unix()).Infoln("create pipe!")
-	pipeConn, err := CreateConn(cliConf.ServerAddr, true)
+	pipeConn, err := transport.CreateConn(cliConf.ServerAddr, c.transportMode, cliConf.HttpProxy)
 	if err != nil {
 		log.WithFields(log.Fields{"addr": cliConf.ServerAddr, "err": err}).Errorln("creating tunnel conn to server failed!")
 		return
@@ -105,9 +109,9 @@ func (c *Control) createPipe() {
 		}
 		go func() {
 			defer stream.Close()
-			tunnel, isok := c.tunnels[stream.TunnelLocalAddr()]
+			tunnel, isok := c.tunnels[stream.TunnelName()]
 			if !isok {
-				log.WithFields(log.Fields{"name": stream.TunnelLocalAddr()}).Errorln("can't find tunnel by name")
+				log.WithFields(log.Fields{"name": stream.TunnelName()}).Errorln("can't find tunnel by name")
 				return
 			}
 			var conn net.Conn
@@ -115,7 +119,7 @@ func (c *Control) createPipe() {
 			if localProto == "http" || localProto == "https" || localProto == "" {
 				conn, err = net.Dial("tcp", addr)
 				if err != nil {
-					log.WithFields(log.Fields{"err": err, "local": stream.TunnelLocalAddr()}).Warningln("pipe dial local failed!")
+					log.WithFields(log.Fields{"err": err, "local": tunnel.LocalAddr}).Warningln("pipe dial local failed!")
 					return
 				}
 				if tunnel.Protocol == "https" {
@@ -124,7 +128,7 @@ func (c *Control) createPipe() {
 			} else {
 				conn, err = net.Dial(localProto, addr)
 				if err != nil {
-					log.WithFields(log.Fields{"err": err, "local": stream.TunnelLocalAddr()}).Warningln("pipe dial local failed!")
+					log.WithFields(log.Fields{"err": err, "local": tunnel.LocalAddr}).Warningln("pipe dial local failed!")
 					return
 				}
 			}
@@ -149,25 +153,22 @@ func (c *Control) createPipe() {
 	}
 }
 
-func (c *Control) ClientSyncTunnels() error {
-	cstm := new(msg.SyncTunnels)
-	cstm.Tunnels = c.tunnels
-	err := msg.WriteMsg(c.ctlConn, msg.TypeSyncTunnels, *cstm)
+func (c *Control) SyncTunnels(cstm *msg.AddTunnels) error {
+	for k, v := range cstm.Tunnels {
+		c.tunnelLock.Lock()
+		c.tunnels[k] = v
+		c.tunnelLock.Unlock()
+		log.WithFields(log.Fields{"local": v.LocalAddr, "remote": v.RemoteAddr()}).Infoln("client sync tunnel complete")
+	}
+	return nil
+}
+
+func (c *Control) ClientAddTunnels() error {
+	cstm := new(msg.AddTunnels)
+	cstm.Tunnels = cliConf.Tunnels
+	err := msg.WriteMsg(c.ctlConn, msg.TypeAddTunnels, *cstm)
 	if err != nil {
 		return errors.Wrap(err, "WriteMsg cstm")
-	}
-	_, body, err := msg.ReadMsg(c.ctlConn)
-	if err != nil {
-		return errors.Wrap(err, "ReadMsg cstm")
-	}
-	cstm = body.(*msg.SyncTunnels)
-	c.tunnels = cstm.Tunnels
-	for _, v := range c.tunnels {
-		if v.Protocol == "http" || v.Protocol == "https" {
-			log.WithFields(log.Fields{"local": v.LocalAddr, "remote": fmt.Sprintf("%s://%s.%s:%d", v.Protocol, v.Subdomain, v.Hostname, v.RemotePort)}).Infoln("client sync tunnel complete")
-		} else {
-			log.WithFields(log.Fields{"local": v.LocalAddr, "remote": fmt.Sprintf("%s://%s:%d", v.Protocol, v.Hostname, v.RemotePort)}).Infoln("client sync tunnel complete")
-		}
 	}
 	return nil
 }
@@ -178,7 +179,7 @@ func (c *Control) recvLoop() {
 		if c.IsClosed() {
 			return
 		}
-		mType, _, err := msg.ReadMsgWithoutTimeout(c.ctlConn)
+		mType, body, err := msg.ReadMsgWithoutTimeout(c.ctlConn)
 		if err != nil {
 			log.WithFields(log.Fields{"err": err}).Warningln("ReadMsgWithoutTimeout failed")
 			c.Close()
@@ -192,6 +193,12 @@ func (c *Control) recvLoop() {
 			c.writeChan <- writeReq{msg.TypePong, nil}
 		case msg.TypePipeReq:
 			go c.createPipe()
+		case msg.TypeAddTunnels:
+			c.SyncTunnels(body.(*msg.AddTunnels))
+		case msg.TypeError:
+			log.Errorln("recv server error:", body.(*msg.Error).Error())
+			c.Close()
+			return
 		}
 	}
 }
@@ -263,8 +270,12 @@ func (c *Control) ClientHandShake() error {
 		return errors.Wrap(err, "WriteMsg ckem")
 	}
 
-	_, body, err := msg.ReadMsg(c.ctlConn)
+	mType, body, err := msg.ReadMsg(c.ctlConn)
 	if err != nil {
+		return errors.Wrap(err, "read ClientID")
+	}
+	if mType == msg.TypeError {
+		err := body.(*msg.Error)
 		return errors.Wrap(err, "read ClientID")
 	}
 	cidm := body.(*msg.ControlServerHello)

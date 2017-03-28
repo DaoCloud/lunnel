@@ -1,12 +1,12 @@
 package msg
 
 import (
-	"Lunnel/crypto"
 	"encoding/json"
 	"fmt"
 	"net"
 	"time"
 
+	"github.com/longXboy/Lunnel/crypto"
 	"github.com/pkg/errors"
 )
 
@@ -14,14 +14,24 @@ type MsgType uint8
 
 const (
 	TypeClientHello MsgType = iota
+	TypeServerHello
 	TypeControlClientHello
 	TypeControlServerHello
 	TypePipeClientHello
-	TypeSyncTunnels
+	TypeAddTunnels
 	TypePipeReq
 	TypePing
 	TypePong
+	TypeError
 )
+
+type Error struct {
+	Msg string
+}
+
+func (e *Error) Error() string {
+	return e.Msg
+}
 
 type ClientHello struct {
 	EncryptMode string
@@ -48,11 +58,19 @@ type TunnelConfig struct {
 	LocalAddr  string `yaml:"local"`
 	Subdomain  string `yaml:"subdomain,omitempty"`
 	Hostname   string `yaml:"hostname,omitempty"`
-	HttpAuth   string `yaml:"auth,omitempty"`
 	RemotePort uint16 `yaml:"remote_port,omitempty"`
 }
 
-type SyncTunnels struct {
+func (tc TunnelConfig) RemoteAddr() string {
+	if tc.Subdomain != "" {
+		return fmt.Sprintf("%s://%s.%s:%d", tc.Protocol, tc.Subdomain, tc.Hostname, tc.RemotePort)
+	} else {
+		return fmt.Sprintf("%s://%s:%d", tc.Protocol, tc.Hostname, tc.RemotePort)
+	}
+
+}
+
+type AddTunnels struct {
 	Tunnels map[string]TunnelConfig
 }
 
@@ -113,12 +131,14 @@ func readMsg(r net.Conn, timeout time.Duration) (MsgType, interface{}, error) {
 		out = new(ControlServerHello)
 	} else if MsgType(header[0]) == TypePipeClientHello {
 		out = new(PipeClientHello)
-	} else if MsgType(header[0]) == TypeSyncTunnels {
-		out = new(SyncTunnels)
-	} else if MsgType(header[0]) == TypePipeReq || MsgType(header[0]) == TypePing || MsgType(header[0]) == TypePong {
+	} else if MsgType(header[0]) == TypeAddTunnels {
+		out = new(AddTunnels)
+	} else if MsgType(header[0]) == TypePipeReq || MsgType(header[0]) == TypePing || MsgType(header[0]) == TypePong || MsgType(header[0]) == TypeServerHello {
 		return MsgType(header[0]), nil, nil
 	} else if MsgType(header[0]) == TypeClientHello {
 		out = new(ClientHello)
+	} else if MsgType(header[0]) == TypeError {
+		out = new(Error)
 	} else {
 		return 0, nil, errors.Errorf("invalid msg type %d", header[0])
 	}

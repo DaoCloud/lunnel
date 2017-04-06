@@ -19,8 +19,8 @@ type Aes struct {
 }
 
 type Tls struct {
-	TlsCert string `yaml:"tls_cert,omitempty"`
-	TlsKey  string `yaml:"tls_key,omitempty"`
+	TlsCert string `yaml:"cert,omitempty"`
+	TlsKey  string `yaml:"key,omitempty"`
 }
 
 type Config struct {

@@ -2,10 +2,14 @@ package main
 
 import (
 	"crypto/tls"
+	"fmt"
 	"io"
 	"net"
+	"os"
+	"os/signal"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	log "github.com/Sirupsen/logrus"
@@ -17,8 +21,8 @@ import (
 	"github.com/pkg/errors"
 )
 
-var pingInterval time.Duration = time.Second * 8
-var pingTimeout time.Duration = time.Second * 17
+var pingInterval time.Duration = time.Second * 30
+var pingTimeout time.Duration = time.Second * 70
 
 func NewControl(conn net.Conn, encryptMode string, transport string) *Control {
 	ctl := &Control{
@@ -46,6 +50,7 @@ type Control struct {
 	lastRead        uint64
 	encryptMode     string
 	transportMode   string
+	totalPipes      int64
 
 	die       chan struct{}
 	toDie     chan struct{}
@@ -55,10 +60,7 @@ type Control struct {
 }
 
 func (c *Control) Close() {
-	select {
-	case c.toDie <- struct{}{}:
-	default:
-	}
+	c.toDie <- struct{}{}
 	log.WithField("time", time.Now().UnixNano()).Infoln("control closing")
 	return
 }
@@ -79,7 +81,7 @@ func (c *Control) moderator() {
 }
 
 func (c *Control) createPipe() {
-	log.WithField("time", time.Now().Unix()).Infoln("create pipe!")
+	log.WithFields(log.Fields{"time": time.Now().Unix(), "pipe_count": atomic.LoadInt64(&c.totalPipes)}).Infoln("create pipe to server!")
 	pipeConn, err := transport.CreateConn(cliConf.ServerAddr, c.transportMode, cliConf.HttpProxy)
 	if err != nil {
 		log.WithFields(log.Fields{"addr": cliConf.ServerAddr, "err": err}).Errorln("creating tunnel conn to server failed!")
@@ -94,7 +96,11 @@ func (c *Control) createPipe() {
 		return
 	}
 	defer pipe.Close()
-
+	atomic.AddInt64(&c.totalPipes, 1)
+	defer func() {
+		log.WithFields(log.Fields{"pipe_count": atomic.LoadInt64(&c.totalPipes)}).Debugln("total pipe count")
+		atomic.AddInt64(&c.totalPipes, -1)
+	}()
 	for {
 		if c.IsClosed() {
 			return
@@ -109,7 +115,9 @@ func (c *Control) createPipe() {
 		}
 		go func() {
 			defer stream.Close()
+			c.tunnelLock.Lock()
 			tunnel, isok := c.tunnels[stream.TunnelName()]
+			c.tunnelLock.Unlock()
 			if !isok {
 				log.WithFields(log.Fields{"name": stream.TunnelName()}).Errorln("can't find tunnel by name")
 				return
@@ -181,7 +189,7 @@ func (c *Control) recvLoop() {
 		}
 		mType, body, err := msg.ReadMsgWithoutTimeout(c.ctlConn)
 		if err != nil {
-			log.WithFields(log.Fields{"err": err}).Warningln("ReadMsgWithoutTimeout failed")
+			log.WithFields(log.Fields{"err": err, "client_id": c.ClientID.Hex()}).Warningln("ReadMsgWithoutTimeout in recv loop failed")
 			c.Close()
 			return
 		}
@@ -219,6 +227,7 @@ func (c *Control) writeLoop() {
 			lastWrite = time.Now()
 			err := msg.WriteMsg(c.ctlConn, msgBody.mType, msgBody.body)
 			if err != nil {
+				log.WithFields(log.Fields{"mType": msgBody.mType, "body": fmt.Sprintf("%v", msgBody.body), "client_id": c.ClientID.Hex(), "err": err}).Warningln("send msg to server failed!")
 				c.Close()
 				return
 			}
@@ -228,10 +237,26 @@ func (c *Control) writeLoop() {
 	}
 
 }
+
+func (c *Control) listenAndStop() {
+	sigChan := make(chan os.Signal)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGKILL)
+	select {
+	case s := <-sigChan:
+		log.WithFields(log.Fields{"signal": s.String(), "client_id": c.ClientID.Hex()}).Infoln("got signal to stop")
+		c.Close()
+		time.Sleep(time.Millisecond * 300)
+		os.Exit(1)
+	case <-c.die:
+		signal.Reset()
+	}
+}
+
 func (c *Control) Run() {
 	go c.moderator()
 	go c.recvLoop()
 	go c.writeLoop()
+	go c.listenAndStop()
 
 	ticker := time.NewTicker(pingInterval)
 	defer ticker.Stop()
@@ -239,6 +264,7 @@ func (c *Control) Run() {
 		select {
 		case <-ticker.C:
 			if (uint64(time.Now().UnixNano()) - atomic.LoadUint64(&c.lastRead)) > uint64(pingTimeout) {
+				log.WithFields(log.Fields{"client_id": c.ClientID.Hex()}).Warningln("recv server ping time out!")
 				c.Close()
 				return
 			}

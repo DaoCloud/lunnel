@@ -1,5 +1,5 @@
 {
-    "memo": "425fcec93da495303f15c80a448934e791b95bfc38fa39c7761b3c30281cffbd",
+    "memo": "e3b077faba9b7c415c133cb53c7f40a7eb04a6db124c77dd35c00aea2faabd16",
     "projects": [
         {
             "name": "github.com/Sirupsen/logrus",
@@ -50,8 +50,8 @@
         },
         {
             "name": "github.com/xtaci/kcp-go",
-            "version": "v3.11",
-            "revision": "af68a93e677c27321b7c23f7baab167aafbe9d4d",
+            "version": "v3.14",
+            "revision": "0b0731ef3f184a8985edcb4ca26a4b0598c6dc1a",
             "packages": [
                 "."
             ]
@@ -59,7 +59,7 @@
         {
             "name": "golang.org/x/crypto",
             "branch": "master",
-            "revision": "459e26527287adbc2adcc5d0d49abff9a5f315a7",
+            "revision": "c2303dcbe84172e0c0da4c9f083eeca54c06f298",
             "packages": [
                 "blowfish",
                 "cast5",
@@ -74,7 +74,7 @@
         {
             "name": "golang.org/x/net",
             "branch": "master",
-            "revision": "6c23252515492caf9b228a9d5cabcdbde29f7f82",
+            "revision": "ffcf1bedda3b04ebb15a168a59800a73d6dc0f4d",
             "packages": [
                 "bpf",
                 "internal/iana",
@@ -85,7 +85,7 @@
         {
             "name": "golang.org/x/sys",
             "branch": "master",
-            "revision": "afadfcc7779c1f4db0f6f6438afcb108d9c9c7cd",
+            "revision": "39e3dc274464e7d2f663aa606a830611bae5f1db",
             "packages": [
                 "unix"
             ]

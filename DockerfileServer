@@ -1,8 +1,7 @@
-FROM golang:1.8.1-alpine
+FROM golang:1.8.1
 
-RUN apk add --update \
-  ca-certificates gcc\
-  && rm -rf /var/cache/apk/*
+RUN apt-get update
+RUN apt-get install build-essential
 
 copy . /go/src/github.com/longXboy/lunnel
 

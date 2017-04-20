@@ -1,17 +1,15 @@
-package main
+package client
 
 import (
 	"crypto/sha1"
 	"encoding/json"
-	"fmt"
 	"io/ioutil"
-	rawLog "log"
 	"net"
 	"os"
 	"strings"
 
-	log "github.com/Sirupsen/logrus"
-	"github.com/longXboy/Lunnel/msg"
+	"github.com/longXboy/lunnel/log"
+	"github.com/longXboy/lunnel/util"
 	"github.com/pkg/errors"
 	"golang.org/x/crypto/pbkdf2"
 	"gopkg.in/yaml.v2"
@@ -26,8 +24,21 @@ type Tls struct {
 	ServerName  string `yaml:"server_name,omitempty"`
 }
 
+type TunnelConfig struct {
+	Schema          string `yaml:"schema,omitempty"`
+	Host            string `yaml:"host,omitempty"`
+	Port            uint16 `yaml:"port,omitempty"`
+	LocalAddr       string `yaml:"local,omitempty"`
+	HttpHostRewrite string `yaml:"http_host_rewrite,omitempty"`
+}
+
+type Health struct {
+	Interval int64 `yaml:"interval,omitempty"`
+	TimeOut  int64 `yaml:"timeout,omitempty"`
+}
+
 type Config struct {
-	Prod    bool   `yaml:"prod,omitempty"`
+	Debug   bool   `yaml:"debug,omitempty"`
 	LogFile string `yaml:"log_file,omitempty"`
 	//if EncryptMode is tls and ServerName is empty,ServerAddr can't be IP format
 	ServerAddr  string `yaml:"server_addr"`
@@ -37,13 +48,18 @@ type Config struct {
 	//none:no encryption
 	//aes:encrpted by aes
 	//tls:encrpted by tls,which is default
-	Tunnels   map[string]msg.TunnelConfig `yaml:"tunnels"`
-	AuthToken string                      `yaml:"auth_token,omitempty"`
+	Tunnels   map[string]TunnelConfig `yaml:"tunnels"`
+	AuthToken string                  `yaml:"auth_token,omitempty"`
 	//mix: switch between kcp and tcp automatically,which is default
 	//kcp: communicate with server in kcp
 	//tcp: communicate with server in tcp
-	Transport string `yaml:"transport,omitempty"`
-	HttpProxy string `yaml:"http_proxy,omitempty"`
+	Transport      string `yaml:"transport,omitempty"`
+	HttpProxy      string `yaml:"http_proxy,omitempty"`
+	DSN            string `yaml:"dsn,omitempty"`
+	EnableCompress bool   `yaml:"enable_compress,omitempty"`
+	Durable        bool   `yaml:"durable,omitempty"`
+	DurableFile    string `yaml:"durable_file,omitempty"`
+	Health         Health `yaml:"health,omitempty"`
 }
 
 var cliConf Config
@@ -99,9 +115,6 @@ func LoadConfig(configFile string) error {
 	} else {
 		log.Fatalln("invalid encyption:", cliConf.EncryptMode)
 	}
-	if len(cliConf.Tunnels) == 0 {
-		log.Warningln("no proxying tunnels sepcified")
-	}
 	if cliConf.Transport == "" {
 		cliConf.Transport = "mix"
 	} else if cliConf.Transport != "kcp" && cliConf.Transport != "tcp" && cliConf.Transport != "mix" {
@@ -114,7 +127,45 @@ func LoadConfig(configFile string) error {
 			cliConf.HttpProxy = os.Getenv("HTTP_PROXY")
 		}
 	}
-	fmt.Println(cliConf)
+
+	if cliConf.DSN == "" {
+		cliConf.DSN = "https://22946d46117c4bac9e680bf10597c564:e904ecd5c94e46c2aa9d15dcae90ac80@sentry.io/156456"
+	}
+
+	if len(cliConf.Tunnels) == 0 {
+		log.Warningln("no proxying tunnels sepcified!")
+	} else {
+		for name, tunnel := range cliConf.Tunnels {
+			localSchema, localHost, _, err := util.ParseAddr(tunnel.LocalAddr)
+			if err != nil {
+				return errors.Wrapf(err, "parse %s local_address", name)
+			}
+			if localHost == "" {
+				return errors.Errorf("%s local_host can not be empty", name)
+			}
+			if localSchema == "" {
+				localSchema = "tcp"
+			}
+			if tunnel.Schema == "" {
+				tunnel.Schema = localSchema
+			}
+			if tunnel.Port > 65535 {
+				return errors.Errorf("%s public_port can not greater than 65535", name)
+			}
+			cliConf.Tunnels[name] = tunnel
+		}
+	}
+	if cliConf.Durable {
+		if cliConf.DurableFile == "" {
+			cliConf.DurableFile = "./lunnel.id"
+		}
+	}
+	if cliConf.Health.Interval == 0 {
+		cliConf.Health.Interval = 20
+	}
+	if cliConf.Health.TimeOut == 0 {
+		cliConf.Health.TimeOut = 50
+	}
 	return nil
 }
 
@@ -127,24 +178,4 @@ func resovleServerName(addr string) (string, error) {
 		return "", errors.New("ServerAddress can't be ip format")
 	}
 	return host, nil
-}
-
-func InitLog() {
-	if cliConf.Prod {
-		log.SetLevel(log.WarnLevel)
-	} else {
-		log.SetLevel(log.DebugLevel)
-	}
-	if cliConf.LogFile != "" {
-		f, err := os.OpenFile(cliConf.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0660)
-		if err != nil {
-			rawLog.Fatalf("open log file failed!err:=%v\n", err)
-			return
-		}
-		log.SetOutput(f)
-		log.SetFormatter(&log.JSONFormatter{})
-	} else {
-		log.SetOutput(os.Stdout)
-		log.SetFormatter(&log.TextFormatter{})
-	}
 }

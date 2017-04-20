@@ -1,14 +1,12 @@
-package main
+package server
 
 import (
 	"crypto/sha1"
 	"encoding/json"
 	"io/ioutil"
-	rawLog "log"
-	"os"
 	"strings"
 
-	log "github.com/Sirupsen/logrus"
+	"github.com/longXboy/lunnel/log"
 	"github.com/pkg/errors"
 	"golang.org/x/crypto/pbkdf2"
 	"gopkg.in/yaml.v2"
@@ -23,8 +21,13 @@ type Tls struct {
 	TlsKey  string `yaml:"key,omitempty"`
 }
 
+type Health struct {
+	Interval int64 `yaml:"interval,omitempty"`
+	TimeOut  int64 `yaml:"timeout,omitempty"`
+}
+
 type Config struct {
-	Prod         bool   `yaml:"prod,omitempty"`
+	Debug        bool   `yaml:"debug,omitempty"`
 	LogFile      string `yaml:"log_file,omitempty"`
 	ListenPort   int    `yaml:"port,omitempty"`
 	ListenIP     string `yaml:"ip,omitempty"`
@@ -39,6 +42,8 @@ type Config struct {
 	NotifyEnable bool   `yaml:"notify_enable,omitempty"`
 	NotifyUrl    string `yaml:"notify_url,omitempty"`
 	NotifyKey    string `yaml:"notify_key,omitempty"`
+	DSN          string `yaml:"dsn,omitempty"`
+	Health       Health `yaml:"health,omitempty"`
 }
 
 var serverConf Config
@@ -85,25 +90,14 @@ func LoadConfig(configFile string) error {
 	if serverConf.ServerDomain == "" {
 		log.Warningln("server may not proxy http or https req correctly without configuring ServerDomain")
 	}
+	if serverConf.DSN == "" {
+		serverConf.DSN = "https://22946d46117c4bac9e680bf10597c564:e904ecd5c94e46c2aa9d15dcae90ac80@sentry.io/156456"
+	}
+	if serverConf.Health.Interval == 0 {
+		serverConf.Health.Interval = 20
+	}
+	if serverConf.Health.TimeOut == 0 {
+		serverConf.Health.TimeOut = 50
+	}
 	return nil
-}
-
-func InitLog() {
-	if serverConf.Prod {
-		log.SetLevel(log.WarnLevel)
-	} else {
-		log.SetLevel(log.DebugLevel)
-	}
-	if serverConf.LogFile != "" {
-		f, err := os.OpenFile(serverConf.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0660)
-		if err != nil {
-			rawLog.Fatalf("open log file failed!err:=%v\n", err)
-			return
-		}
-		log.SetOutput(f)
-		log.SetFormatter(&log.JSONFormatter{})
-	} else {
-		log.SetOutput(os.Stdout)
-		log.SetFormatter(&log.TextFormatter{})
-	}
 }

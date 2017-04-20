@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"fmt"
@@ -8,40 +8,46 @@ import (
 	"sync/atomic"
 	"time"
 
-	log "github.com/Sirupsen/logrus"
-	"github.com/longXboy/Lunnel/contrib"
-	"github.com/longXboy/Lunnel/crypto"
-	"github.com/longXboy/Lunnel/msg"
-	"github.com/longXboy/Lunnel/util"
+	"github.com/longXboy/lunnel/contrib"
+	"github.com/longXboy/lunnel/crypto"
+	"github.com/longXboy/lunnel/log"
+	"github.com/longXboy/lunnel/msg"
+	"github.com/longXboy/lunnel/transport"
+	"github.com/longXboy/lunnel/util"
 	"github.com/longXboy/smux"
 	"github.com/pkg/errors"
+	"github.com/satori/go.uuid"
+	"golang.org/x/net/context"
 )
 
-var maxIdlePipes int = 3
+var maxIdlePipes int = 2
 var maxStreams int = 6
 
-var pingInterval time.Duration = time.Second * 30
-var pingTimeout time.Duration = time.Second * 70
-var cleanInterval time.Duration = time.Second * 5
+var cleanInterval time.Duration = time.Second * 60
 
 var ControlMapLock sync.RWMutex
-var ControlMap = make(map[crypto.UUID]*Control)
+var ControlMap = make(map[uuid.UUID]*Control)
 
 var subDomainIdx uint64
 
 var TunnelMapLock sync.RWMutex
 var TunnelMap = make(map[string]*Tunnel)
 
-func NewControl(conn net.Conn, encryptMode string) *Control {
+func NewControl(conn net.Conn, encryptMode string, enableCompress bool, version string) *Control {
+	ctx, cancel := context.WithCancel(context.Background())
+
 	ctl := &Control{
-		ctlConn:     conn,
-		pipeGet:     make(chan *smux.Session),
-		pipeAdd:     make(chan *smux.Session),
-		die:         make(chan struct{}),
-		toDie:       make(chan struct{}),
-		writeChan:   make(chan writeReq, 128),
-		encryptMode: encryptMode,
-		tunnels:     make(map[string]*Tunnel, 0),
+		ctlConn:        conn,
+		pipeGet:        make(chan *smux.Session),
+		pipeAdd:        make(chan *smux.Session),
+		writeChan:      make(chan writeReq, 64),
+		encryptMode:    encryptMode,
+		tunnels:        make(map[string]*Tunnel, 0),
+		tunnelLock:     new(sync.Mutex),
+		enableCompress: enableCompress,
+		ctx:            ctx,
+		cancel:         cancel,
+		version:        version,
 	}
 	return ctl
 }
@@ -52,25 +58,31 @@ type writeReq struct {
 }
 
 type Tunnel struct {
-	tunnelConfig msg.TunnelConfig
+	tunnelConfig msg.Tunnel
 	listener     net.Listener
-	tunnelName   string
+	name         string
 	ctl          *Control
+	isClosed     bool
 }
 
-func (t Tunnel) Close() {
+func (t *Tunnel) Close() {
+	if t.isClosed {
+		return
+	}
+	TunnelMapLock.Lock()
+	delete(TunnelMap, t.tunnelConfig.PublicAddr())
+	TunnelMapLock.Unlock()
 	if t.listener != nil {
 		t.listener.Close()
 	}
-	TunnelMapLock.Lock()
-	delete(TunnelMap, t.tunnelConfig.RemoteAddr())
-	TunnelMapLock.Unlock()
 	if serverConf.NotifyEnable {
-		err := contrib.RemoveMember(serverConf.ServerDomain, t.tunnelConfig.RemoteAddr())
+		err := contrib.RemoveTunnel(serverConf.ServerDomain, t.tunnelConfig, t.ctl.ClientID.String())
 		if err != nil {
 			log.WithFields(log.Fields{"err": err}).Errorln("notify remove member failed!")
 		}
 	}
+	t.isClosed = true
+	t.listener = nil
 }
 
 type pipeNode struct {
@@ -80,12 +92,17 @@ type pipeNode struct {
 }
 
 type Control struct {
+	ClientID        uuid.UUID
 	ctlConn         net.Conn
-	tunnels         map[string]*Tunnel
-	tunnelLock      sync.Mutex
 	preMasterSecret []byte
 	lastRead        uint64
 	encryptMode     string
+	enableCompress  bool
+	writeChan       chan writeReq
+	version         string
+
+	tunnels    map[string]*Tunnel
+	tunnelLock *sync.Mutex
 
 	busyPipes  *pipeNode
 	idleCount  int
@@ -94,11 +111,8 @@ type Control struct {
 	pipeAdd    chan *smux.Session
 	pipeGet    chan *smux.Session
 
-	die       chan struct{}
-	toDie     chan struct{}
-	writeChan chan writeReq
-
-	ClientID crypto.UUID
+	cancel context.CancelFunc
+	ctx    context.Context
 }
 
 func (c *Control) addIdlePipe(pipe *smux.Session) {
@@ -109,7 +123,6 @@ func (c *Control) addIdlePipe(pipe *smux.Session) {
 	}
 	c.idlePipes = pNode
 	c.idleCount++
-
 }
 
 func (c *Control) addBusyPipe(pipe *smux.Session) {
@@ -153,7 +166,7 @@ func (c *Control) removeBusyNode(pNode *pipeNode) {
 func (c *Control) putPipe(p *smux.Session) {
 	select {
 	case c.pipeAdd <- p:
-	case <-c.die:
+	case <-c.ctx.Done():
 		atomic.AddInt64(&c.totalPipes, -1)
 		p.Close()
 		return
@@ -165,14 +178,14 @@ func (c *Control) getPipe() *smux.Session {
 	select {
 	case p := <-c.pipeGet:
 		return p
-	case <-c.die:
+	case <-c.ctx.Done():
 		return nil
 	}
 }
 
 func (c *Control) clean() {
 	if atomic.LoadInt64(&c.totalPipes) > int64(maxIdlePipes) {
-		log.WithFields(log.Fields{"total_pipe_count": atomic.LoadInt64(&c.totalPipes), "client_id": c.ClientID.Hex()}).Debugln("total pipe count")
+		log.WithFields(log.Fields{"total_pipe_count": atomic.LoadInt64(&c.totalPipes), "client_id": c.ClientID.String()}).Debugln("total pipe count")
 	}
 	busy := c.busyPipes
 	for {
@@ -195,7 +208,7 @@ func (c *Control) clean() {
 		if idle.pipe.IsClosed() {
 			c.removeIdleNode(idle)
 		} else if idle.pipe.NumStreams() == 0 && c.idleCount >= maxIdlePipes {
-			log.WithFields(log.Fields{"time": time.Now().Unix(), "pipe": fmt.Sprintf("%p", idle.pipe), "client_id": c.ClientID.Hex()}).Infoln("remove and close idle")
+			log.WithFields(log.Fields{"time": time.Now().Unix(), "pipe": fmt.Sprintf("%p", idle.pipe), "client_id": c.ClientID.String()}).Debugln("remove and close idle")
 			c.removeIdleNode(idle)
 			atomic.AddInt64(&c.totalPipes, -1)
 			idle.pipe.Close()
@@ -223,6 +236,7 @@ func (c *Control) getIdleFast() (idle *pipeNode) {
 }
 
 func (c *Control) pipeManage() {
+	defer c.closePipes()
 	var available *smux.Session
 	ticker := time.NewTicker(cleanInterval)
 	defer ticker.Stop()
@@ -234,7 +248,12 @@ func (c *Control) pipeManage() {
 			if idle == nil {
 				c.clean()
 				idle := c.getIdleFast()
-				c.writeChan <- writeReq{msg.TypePipeReq, nil}
+				select {
+				case c.writeChan <- writeReq{msg.TypePipeReq, nil}:
+				default:
+					c.Close()
+					return
+				}
 				if idle == nil {
 					pipeGetTimeout := time.After(time.Second * 12)
 					for {
@@ -255,7 +274,7 @@ func (c *Control) pipeManage() {
 									c.addBusyPipe(p)
 								}
 							}
-						case <-c.die:
+						case <-c.ctx.Done():
 							return
 						case <-pipeGetTimeout:
 							goto Prepare
@@ -273,7 +292,7 @@ func (c *Control) pipeManage() {
 		case <-ticker.C:
 			c.clean()
 		case c.pipeGet <- available:
-			log.WithFields(log.Fields{"pipe": fmt.Sprintf("%p", available), "client_id": c.ClientID.Hex()}).Infoln("dispatch pipe to consumer")
+			log.WithFields(log.Fields{"pipe": fmt.Sprintf("%p", available), "client_id": c.ClientID.String()}).Debugln("dispatch pipe to consumer")
 			available = nil
 		case p := <-c.pipeAdd:
 			if !p.IsClosed() {
@@ -283,36 +302,31 @@ func (c *Control) pipeManage() {
 					c.addBusyPipe(p)
 				}
 			}
-		case <-c.die:
+		case <-c.ctx.Done():
 			return
 		}
 	}
 }
 
 func (c *Control) Close() {
-	c.toDie <- struct{}{}
-	log.WithField("time", time.Now().UnixNano()).Infoln("control closing")
-	return
+	log.WithField("clientId", c.ClientID).Debugln("ready to close control")
+	c.cancel()
 }
 
-func (c *Control) IsClosed() bool {
-	select {
-	case <-c.die:
-		return true
-	default:
-		return false
-	}
-}
-
-func (c *Control) moderator() {
-	_ = <-c.toDie
-	log.WithFields(log.Fields{"ClientId": c.ClientID.Hex()}).Infoln("client going to close")
-	close(c.die)
+func (c *Control) closeTunnels() []*Tunnel {
+	log.WithField("clientId", c.ClientID).Debugln("ready to close tunnels")
+	var tunnels []*Tunnel
 	c.tunnelLock.Lock()
 	for _, t := range c.tunnels {
 		t.Close()
+		tunnels = append(tunnels, t)
 	}
 	c.tunnelLock.Unlock()
+	return tunnels
+}
+
+func (c *Control) closePipes() {
+	log.WithField("clientId", c.ClientID).Debugln("ready to close pipes")
 	idle := c.idlePipes
 	for {
 		if idle == nil {
@@ -324,6 +338,8 @@ func (c *Control) moderator() {
 		}
 		idle = idle.next
 	}
+	c.idlePipes = nil
+
 	busy := c.busyPipes
 	for {
 		if busy == nil {
@@ -335,29 +351,37 @@ func (c *Control) moderator() {
 		}
 		busy = busy.next
 	}
-	c.ctlConn.Close()
+	c.busyPipes = nil
 }
 
 func (c *Control) recvLoop() {
 	atomic.StoreUint64(&c.lastRead, uint64(time.Now().UnixNano()))
 	for {
-		if c.IsClosed() {
-			return
-		}
 		mType, body, err := msg.ReadMsgWithoutTimeout(c.ctlConn)
 		if err != nil {
-			log.WithFields(log.Fields{"err": err, "client_Id": c.ClientID.Hex()}).Warningln("ReadMsgWithoutTimeout in recvLoop failed")
+			log.WithFields(log.Fields{"err": err, "client_Id": c.ClientID.String()}).Warningln("ReadMsgWithoutTimeout in recvLoop failed")
 			c.Close()
 			return
 		}
-
+		if mType != msg.TypePing && mType != msg.TypePong {
+			log.WithFields(log.Fields{"type": mType, "body": body, "client_id": c.ClientID}).Debugln("recv msg")
+		}
 		atomic.StoreUint64(&c.lastRead, uint64(time.Now().UnixNano()))
 		switch mType {
 		case msg.TypeAddTunnels:
 			go c.ServerAddTunnels(body.(*msg.AddTunnels))
 		case msg.TypePong:
 		case msg.TypePing:
-			c.writeChan <- writeReq{msg.TypePong, nil}
+			select {
+			case c.writeChan <- writeReq{msg.TypePong, nil}:
+			default:
+				c.Close()
+				return
+			}
+		case msg.TypeExit:
+			c.Close()
+			return
+		default:
 		}
 	}
 }
@@ -366,13 +390,10 @@ func (c *Control) writeLoop() {
 	lastWrite := time.Now()
 	idx := 0
 	for {
-		if c.IsClosed() {
-			return
-		}
 		select {
 		case msgBody := <-c.writeChan:
-			if msgBody.mType == msg.TypePing || msgBody.mType == msg.TypePong {
-				if time.Now().Before(lastWrite.Add(pingInterval / 2)) {
+			if msgBody.mType == msg.TypePing {
+				if time.Now().Before(lastWrite.Add(time.Duration(serverConf.Health.Interval * int64(time.Second) / 2))) {
 					continue
 				}
 			}
@@ -380,42 +401,48 @@ func (c *Control) writeLoop() {
 				idx++
 			}
 			lastWrite = time.Now()
+			if msgBody.mType != msg.TypePing && msgBody.mType != msg.TypePong {
+				log.WithFields(log.Fields{"type": msgBody.mType, "body": msgBody.body, "client_id": c.ClientID}).Debugln("ready to send msg")
+			}
 			err := msg.WriteMsg(c.ctlConn, msgBody.mType, msgBody.body)
 			if err != nil {
-				log.WithFields(log.Fields{"mType": msgBody.mType, "body": fmt.Sprintf("%v", msgBody.body), "client_id": c.ClientID.Hex(), "err": err}).Warningln("send msg to client failed!")
+				log.WithFields(log.Fields{"mType": msgBody.mType, "body": fmt.Sprintf("%v", msgBody.body), "client_id": c.ClientID.String(), "err": err}).Warningln("send msg to client failed!")
 				c.Close()
 				return
 			}
-		case <-c.die:
+		case <-c.ctx.Done():
+			fmt.Println("write done")
 			return
 		}
 	}
-
 }
 
 func (c *Control) Serve() {
-	go c.moderator()
+	defer c.ctlConn.Close()
+	defer c.closeTunnels()
+
 	go c.recvLoop()
 	go c.writeLoop()
 	go c.pipeManage()
 
-	ticker := time.NewTicker(pingInterval)
+	ticker := time.NewTicker(time.Duration(serverConf.Health.Interval * int64(time.Second)))
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
-			if (uint64(time.Now().UnixNano()) - atomic.LoadUint64(&c.lastRead)) > uint64(pingTimeout) {
-				log.WithFields(log.Fields{"client_id": c.ClientID.Hex()}).Warningln("recv client ping time out!")
+			if (uint64(time.Now().UnixNano()) - atomic.LoadUint64(&c.lastRead)) > uint64(serverConf.Health.TimeOut*int64(time.Second)) {
+				log.WithFields(log.Fields{"client_id": c.ClientID.String()}).Warningln("recv client ping time out!")
 				c.Close()
 				return
 			}
 			select {
 			case c.writeChan <- writeReq{msg.TypePing, nil}:
-			case <-c.die:
+			default:
+				c.Close()
 				return
 			}
-		case <-c.die:
+		case <-c.ctx.Done():
 			return
 		}
 	}
@@ -453,37 +480,41 @@ func proxyConn(userConn net.Conn, c *Control, tunnelName string) {
 
 //add or update tunnel stat
 func (c *Control) ServerAddTunnels(sstm *msg.AddTunnels) {
-	for name, _ := range sstm.Tunnels {
-		if c.IsClosed() {
-			return
-		}
+	c.tunnelLock.Lock()
+	defer c.tunnelLock.Unlock()
+	for name, tunnel := range sstm.Tunnels {
 		var lis net.Listener = nil
 		var err error
-		c.tunnelLock.Lock()
 		oldTunnel, isok := c.tunnels[name]
 		if isok {
 			oldTunnel.Close()
 			delete(c.tunnels, name)
 		}
-		c.tunnelLock.Unlock()
-		tunnelConfig := sstm.Tunnels[name]
-		selfHost := false
-		if tunnelConfig.Hostname == "" {
-			tunnelConfig.Hostname = serverConf.ServerDomain
-			selfHost = true
-		}
-		if tunnelConfig.Protocol == "tcp" || tunnelConfig.Protocol == "udp" {
-			lis, err = net.Listen(tunnelConfig.Protocol, fmt.Sprintf("%s:%d", serverConf.ListenIP, tunnelConfig.RemotePort))
+
+		if tunnel.Public.Schema == "tcp" || tunnel.Public.Schema == "udp" {
+			if tunnel.Public.Port == 0 && oldTunnel != nil && tunnel.Public.Schema == oldTunnel.tunnelConfig.Public.Schema {
+				tunnel.Public.AllowReallocate = true
+				tunnel.Public.Port = oldTunnel.tunnelConfig.Public.Port
+			}
+			lis, err = net.Listen(tunnel.Public.Schema, fmt.Sprintf("%s:%d", serverConf.ListenIP, tunnel.Public.Port))
 			if err != nil {
-				log.WithFields(log.Fields{"remote_addr": tunnelConfig.RemoteAddr(), "client_id": c.ClientID.Hex()}).Warningln("forbidden,remote port already in use")
-				c.writeChan <- writeReq{msg.TypeError, msg.Error{fmt.Sprintf("add tunnels failed!forbidden,remote addrs(%s) already in use", tunnelConfig.RemoteAddr())}}
-				continue
+				if tunnel.Public.AllowReallocate {
+					lis, err = net.Listen(tunnel.Public.Schema, fmt.Sprintf("%s:%d", serverConf.ListenIP, 0))
+				}
+				if err != nil {
+					log.WithFields(log.Fields{"remote_addr": tunnel.PublicAddr(), "client_id": c.ClientID.String()}).Warningln("forbidden,remote port already in use")
+					select {
+					case c.writeChan <- writeReq{msg.TypeError, msg.Error{fmt.Sprintf("add tunnels failed!forbidden,remote addrs(%s) already in use", tunnel.PublicAddr())}}:
+					default:
+						c.Close()
+						return
+					}
+
+					continue
+				}
 			}
 			go func(tunnelName string) {
 				for {
-					if c.IsClosed() {
-						return
-					}
 					conn, err := lis.Accept()
 					if err != nil {
 						return
@@ -493,47 +524,64 @@ func (c *Control) ServerAddTunnels(sstm *msg.AddTunnels) {
 			}(name)
 			//todo: port should  allocated and managed by server not by OS
 			addr := lis.Addr().(*net.TCPAddr)
-			tunnelConfig.RemotePort = uint16(addr.Port)
-		} else if tunnelConfig.Protocol == "http" || tunnelConfig.Protocol == "https" {
-			if tunnelConfig.Subdomain == "" && selfHost {
-				subDomain := util.Int2Short(atomic.AddUint64(&subDomainIdx, 1))
-				tunnelConfig.Subdomain = string(subDomain)
+			tunnel.Public.Port = uint16(addr.Port)
+			tunnel.Public.Host = serverConf.ServerDomain
+		} else if tunnel.Public.Schema == "http" || tunnel.Public.Schema == "https" {
+			if tunnel.Public.Host == "" {
+				if oldTunnel != nil && tunnel.Public.Schema == oldTunnel.tunnelConfig.Public.Schema {
+					tunnel.Public.AllowReallocate = true
+					tunnel.Public.Host = oldTunnel.tunnelConfig.Public.Host
+				} else {
+					subDomain := util.Int2Short(atomic.AddUint64(&subDomainIdx, 1))
+					tunnel.Public.Host = fmt.Sprintf("%s.%s", string(subDomain), serverConf.ServerDomain)
+				}
 			}
-			if tunnelConfig.Protocol == "http" {
-				tunnelConfig.RemotePort = serverConf.HttpPort
+			if tunnel.Public.Schema == "http" {
+				tunnel.Public.Port = serverConf.HttpPort
 			} else {
-				tunnelConfig.RemotePort = serverConf.HttpsPort
+				tunnel.Public.Port = serverConf.HttpsPort
 			}
 		}
-		tunnel := Tunnel{tunnelConfig: tunnelConfig, listener: lis, ctl: c, tunnelName: name}
+		tunnelControl := Tunnel{tunnelConfig: tunnel, listener: lis, ctl: c, name: name}
 		TunnelMapLock.Lock()
-		_, isok = TunnelMap[tunnelConfig.RemoteAddr()]
+		_, isok = TunnelMap[tunnel.PublicAddr()]
 		if isok {
 			TunnelMapLock.Unlock()
-			log.WithFields(log.Fields{"remote_addr": tunnelConfig.RemoteAddr(), "client_id": c.ClientID.Hex()}).Warningln("forbidden,remote addrs already in use")
-			c.writeChan <- writeReq{msg.TypeError, msg.Error{fmt.Sprintf("add tunnels failed!forbidden,remote addrs(%s) already in use", tunnelConfig.RemoteAddr())}}
+			if lis != nil {
+				lis.Close()
+			}
+			log.WithFields(log.Fields{"remote_addr": tunnel.PublicAddr(), "client_id": c.ClientID.String()}).Warningln("forbidden,remote addrs already in use")
+			select {
+			case c.writeChan <- writeReq{msg.TypeError, msg.Error{fmt.Sprintf("add tunnels failed!forbidden,remote addrs(%s) already in use", tunnel.PublicAddr())}}:
+			default:
+				c.Close()
+				return
+			}
 			continue
 		}
-		TunnelMap[tunnelConfig.RemoteAddr()] = &tunnel
+		TunnelMap[tunnel.PublicAddr()] = &tunnelControl
 		TunnelMapLock.Unlock()
-		c.tunnelLock.Lock()
-		c.tunnels[name] = &tunnel
-		c.tunnelLock.Unlock()
-		sstm.Tunnels[name] = tunnelConfig
+		c.tunnels[name] = &tunnelControl
+		sstm.Tunnels[name] = tunnel
 
 		if serverConf.NotifyEnable {
-			err = contrib.AddMember(serverConf.ServerDomain, tunnelConfig.RemoteAddr())
+			err = contrib.AddTunnel(serverConf.ServerDomain, tunnel, c.ClientID.String())
 			if err != nil {
 				log.WithFields(log.Fields{"err": err}).Errorln("notify add member failed!")
 			}
 		}
 	}
-	c.writeChan <- writeReq{msg.TypeAddTunnels, *sstm}
+	select {
+	case c.writeChan <- writeReq{msg.TypeAddTunnels, *sstm}:
+	default:
+		c.Close()
+		return
+	}
 	return
 }
 
-func (c *Control) GenerateClientId() crypto.UUID {
-	c.ClientID = crypto.GenUUID()
+func (c *Control) GenerateClientId() uuid.UUID {
+	c.ClientID = uuid.NewV4()
 	return c.ClientID
 }
 
@@ -570,12 +618,28 @@ func (c *Control) ServerHandShake() error {
 		c.preMasterSecret = preMasterSecret
 		shello.CipherKey = keyMsg
 	}
-	shello.ClientID = c.GenerateClientId()
+	if chello.ClientID != nil {
+		shello.ClientID = *chello.ClientID
+	} else {
+		shello.ClientID = c.GenerateClientId()
+	}
+	c.ClientID = shello.ClientID
 	err = msg.WriteMsg(c.ctlConn, msg.TypeControlServerHello, shello)
 	if err != nil {
 		return errors.Wrap(err, "Write ClientId")
 	}
 
+	ControlMapLock.RLock()
+	old, isok := ControlMap[c.ClientID]
+	ControlMap[c.ClientID] = c
+	ControlMapLock.RUnlock()
+	if isok {
+		oldTunnels := old.closeTunnels()
+		for _, oldTunnel := range oldTunnels {
+			c.tunnels[oldTunnel.name] = oldTunnel
+		}
+		c.tunnelLock = old.tunnelLock
+	}
 	ControlMapLock.Lock()
 	ControlMap[c.ClientID] = c
 	ControlMapLock.Unlock()
@@ -584,30 +648,33 @@ func (c *Control) ServerHandShake() error {
 
 func PipeHandShake(conn net.Conn, phs *msg.PipeClientHello) error {
 	ControlMapLock.RLock()
-	ctl := ControlMap[phs.ClientID]
+	ctl, isok := ControlMap[phs.ClientID]
 	ControlMapLock.RUnlock()
+	if !isok {
+		return errors.Errorf("invalid phs.client_id %s", phs.ClientID.String())
+	}
 	smuxConfig := smux.DefaultConfig()
 	smuxConfig.MaxReceiveBuffer = 4194304
 	var err error
 	var sess *smux.Session
+	var underlyingConn io.ReadWriteCloser
 	if ctl.encryptMode != "none" {
 		prf := crypto.NewPrf12()
 		var masterKey []byte = make([]byte, 16)
 		prf(masterKey, ctl.preMasterSecret, phs.ClientID[:], phs.Once[:])
-		cryptoConn, err := crypto.NewCryptoConn(conn, masterKey)
+		underlyingConn, err = crypto.NewCryptoStream(conn, masterKey)
 		if err != nil {
 			return errors.Wrap(err, "crypto.NewCryptoConn")
 		}
-		//server endpoint is the pipe connection source,so we use smux.Client
-		sess, err = smux.Client(cryptoConn, smuxConfig)
-		if err != nil {
-			return errors.Wrap(err, "smux.Client")
-		}
 	} else {
-		sess, err = smux.Client(conn, smuxConfig)
-		if err != nil {
-			return errors.Wrap(err, "smux.Client")
-		}
+		underlyingConn = conn
+	}
+	if ctl.enableCompress {
+		underlyingConn = transport.NewCompStream(underlyingConn)
+	}
+	sess, err = smux.Client(underlyingConn, smuxConfig)
+	if err != nil {
+		return errors.Wrap(err, "smux.Client")
 	}
 	ctl.putPipe(sess)
 	atomic.AddInt64(&ctl.totalPipes, 1)

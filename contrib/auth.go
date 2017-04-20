@@ -2,31 +2,46 @@ package contrib
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
+	"time"
 
 	log "github.com/Sirupsen/logrus"
 )
 
-var daoUrl *url.URL
+var httpClient *http.Client
+
+var daoKeeperUrl string
 
 func InitAuth(authUrl string) error {
 	if authUrl == "" {
 		return fmt.Errorf("auth url not be empty")
 	}
-	var err error
-	daoUrl, err = url.Parse(authUrl)
-	if err != nil {
-		return fmt.Errorf("DAOKEEPER_URL Parse error %s,%v", authUrl, err)
+	daoKeeperUrl = authUrl
+
+	trans := &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   8 * time.Second,
+			KeepAlive: 90 * time.Second,
+		}).DialContext,
+		MaxIdleConns:          12,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   8 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
 	}
-	daoUrl.Path = "/v1/ngrokd/auth"
+	httpClient = &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: trans,
+	}
+
 	return nil
 }
 
 func Auth(authToken string) (bool, error) {
-	resp, err := http.PostForm(daoUrl.String(), url.Values{"user": {authToken}})
+	resp, err := httpClient.PostForm(fmt.Sprintf("%s/v1/ngrokd/auth", daoKeeperUrl), url.Values{"user": {authToken}})
 	if err != nil {
-		return false, fmt.Errorf("Request daokeeper error %s,%v", daoUrl.String(), err)
+		return false, fmt.Errorf("Request daokeeper error %s,%v", fmt.Sprintf("%s/v1/ngrokd/auth", daoKeeperUrl), err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == 200 {

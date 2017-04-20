@@ -6,8 +6,8 @@ import (
 	"net"
 	"time"
 
-	"github.com/longXboy/Lunnel/crypto"
 	"github.com/pkg/errors"
+	"github.com/satori/go.uuid"
 )
 
 type MsgType uint8
@@ -23,6 +23,7 @@ const (
 	TypePing
 	TypePong
 	TypeError
+	TypeExit
 )
 
 type Error struct {
@@ -34,44 +35,60 @@ func (e *Error) Error() string {
 }
 
 type ClientHello struct {
-	EncryptMode string
+	EncryptMode    string
+	EnableCompress bool
+	Version        string
 }
 
 type ControlClientHello struct {
 	CipherKey []byte
 	AuthToken string
-	ClientID  crypto.UUID
+	ClientID  *uuid.UUID
 }
 
 type ControlServerHello struct {
-	ClientID  crypto.UUID
+	ClientID  uuid.UUID
 	CipherKey []byte
 }
 
 type PipeClientHello struct {
-	Once     crypto.UUID
-	ClientID crypto.UUID
+	Once     uuid.UUID
+	ClientID uuid.UUID
 }
 
-type TunnelConfig struct {
-	Protocol   string `yaml:"proto"`
-	LocalAddr  string `yaml:"local"`
-	Subdomain  string `yaml:"subdomain,omitempty"`
-	Hostname   string `yaml:"hostname,omitempty"`
-	RemotePort uint16 `yaml:"remote_port,omitempty"`
+type Public struct {
+	Schema          string
+	Host            string
+	Port            uint16
+	AllowReallocate bool
 }
 
-func (tc TunnelConfig) RemoteAddr() string {
-	if tc.Subdomain != "" {
-		return fmt.Sprintf("%s://%s.%s:%d", tc.Protocol, tc.Subdomain, tc.Hostname, tc.RemotePort)
+type Local struct {
+	Schema string
+	Host   string
+	Port   uint16
+}
+
+type Tunnel struct {
+	Public          Public
+	Local           Local
+	HttpHostRewrite string
+}
+
+func (tc Tunnel) PublicAddr() string {
+	return fmt.Sprintf("%s://%s:%d", tc.Public.Schema, tc.Public.Host, tc.Public.Port)
+}
+
+func (tc Tunnel) LocalAddr() string {
+	if tc.Local.Port == 0 {
+		return fmt.Sprintf("%s://%s", tc.Local.Schema, tc.Local.Host)
 	} else {
-		return fmt.Sprintf("%s://%s:%d", tc.Protocol, tc.Hostname, tc.RemotePort)
+		return fmt.Sprintf("%s://%s:%d", tc.Local.Schema, tc.Local.Host, tc.Local.Port)
 	}
-
 }
 
 type AddTunnels struct {
-	Tunnels map[string]TunnelConfig
+	Tunnels map[string]Tunnel
 }
 
 func WriteMsg(w net.Conn, mType MsgType, in interface{}) error {
@@ -98,7 +115,7 @@ func WriteMsg(w net.Conn, mType MsgType, in interface{}) error {
 	if body != nil {
 		copy(x[4:], body)
 	}
-	w.SetWriteDeadline(time.Now().Add(time.Second * 10))
+	w.SetWriteDeadline(time.Now().Add(time.Second * 15))
 	_, err = w.Write(x)
 	if err != nil {
 		return errors.Wrap(err, "write msg")
@@ -112,7 +129,7 @@ func ReadMsgWithoutTimeout(r net.Conn) (MsgType, interface{}, error) {
 }
 
 func ReadMsg(r net.Conn) (MsgType, interface{}, error) {
-	return readMsg(r, time.Second*10)
+	return readMsg(r, time.Second*12)
 }
 
 func readMsg(r net.Conn, timeout time.Duration) (MsgType, interface{}, error) {
@@ -131,7 +148,7 @@ func readMsg(r net.Conn, timeout time.Duration) (MsgType, interface{}, error) {
 		out = new(PipeClientHello)
 	} else if MsgType(header[0]) == TypeAddTunnels {
 		out = new(AddTunnels)
-	} else if MsgType(header[0]) == TypePipeReq || MsgType(header[0]) == TypePing || MsgType(header[0]) == TypePong || MsgType(header[0]) == TypeServerHello {
+	} else if MsgType(header[0]) == TypePipeReq || MsgType(header[0]) == TypePing || MsgType(header[0]) == TypePong || MsgType(header[0]) == TypeServerHello || MsgType(header[0]) == TypeExit {
 		return MsgType(header[0]), nil, nil
 	} else if MsgType(header[0]) == TypeClientHello {
 		out = new(ClientHello)

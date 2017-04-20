@@ -1,6 +1,8 @@
 package util
 
 import (
+	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -26,10 +28,29 @@ func Int2Short(a uint64) []byte {
 	return link
 }
 
-func SplitAddr(s string) (string, string) {
-	temp := strings.Split(s, "://")
-	if len(temp) != 2 {
-		return "", s
+func ParseAddr(s string) (schema string, hostname string, port uint64, err error) {
+	temp := strings.SplitN(s, "://", 2)
+	if len(temp) == 1 {
+		hostname = temp[0]
+	} else {
+		schema = temp[0]
+		hostname = temp[1]
 	}
-	return temp[0], temp[1]
+	idx := strings.LastIndex(hostname, ":")
+	if idx >= 0 {
+		portStr := hostname[idx+1:]
+		hostname = hostname[:idx]
+		if portStr == "" {
+			port = 0
+		} else {
+			port, err = strconv.ParseUint(portStr, 10, 16)
+			if err != nil {
+				err = fmt.Errorf("port invalid %s", err.Error())
+			}
+			if port > 65535 {
+				err = fmt.Errorf("port greater than 65535")
+			}
+		}
+	}
+	return
 }

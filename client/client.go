@@ -1,4 +1,4 @@
-package main
+package client
 
 import (
 	"crypto/tls"
@@ -6,20 +6,26 @@ import (
 	"encoding/pem"
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	rawLog "log"
-	"net"
+	"os"
 	"time"
 
-	log "github.com/Sirupsen/logrus"
-	"github.com/klauspost/compress/snappy"
-	"github.com/longXboy/Lunnel/crypto"
-	"github.com/longXboy/Lunnel/msg"
-	"github.com/longXboy/Lunnel/transport"
+	"github.com/getsentry/raven-go"
+	"github.com/longXboy/lunnel/crypto"
+	"github.com/longXboy/lunnel/log"
+	"github.com/longXboy/lunnel/msg"
+	"github.com/longXboy/lunnel/transport"
+	"github.com/longXboy/lunnel/util"
+	"github.com/longXboy/lunnel/version"
 	"github.com/longXboy/smux"
+	"github.com/satori/go.uuid"
 )
 
-const reconnectInterval = 10
+const reconnectInterval = 8
+
+var clientId *uuid.UUID
 
 func LoadTLSConfig(rootCertPaths []string) (*tls.Config, error) {
 	pool := x509.NewCertPool()
@@ -55,8 +61,7 @@ func dialAndRun(transportMode string) {
 		return
 	}
 	defer conn.Close()
-	var chello msg.ClientHello
-	chello.EncryptMode = cliConf.EncryptMode
+	chello := msg.ClientHello{EncryptMode: cliConf.EncryptMode, EnableCompress: cliConf.EnableCompress, Version: version.Version}
 	err = msg.WriteMsg(conn, msg.TypeClientHello, chello)
 	if err != nil {
 		log.WithFields(log.Fields{"server address": cliConf.ServerAddr, "err": err}).Warnln("write ControlClientHello failed!")
@@ -69,15 +74,40 @@ func dialAndRun(transportMode string) {
 	}
 	if mType == msg.TypeError {
 		serverError := body.(*msg.Error)
-		log.WithFields(log.Fields{"server error": serverError.Error()}).Warnln("client hello failed!")
+		log.WithFields(log.Fields{"server error": serverError.Error()}).Errorln("client hello failed!")
 		return
 	} else if mType == msg.TypeServerHello {
-		log.Infoln("recv msg serer hello success")
+		log.Debugln("recv msg serer hello success")
+	}
+	var underlyingConn io.ReadWriteCloser
+	if cliConf.EncryptMode == "tls" {
+		tlsConfig, err := LoadTLSConfig([]string{cliConf.Tls.TrustedCert})
+		if err != nil {
+			log.WithFields(log.Fields{"trusted cert": cliConf.Tls.TrustedCert, "err": err}).Fatalln("load tls trusted cert failed!")
+			return
+		}
+		tlsConfig.ServerName = cliConf.Tls.ServerName
+		underlyingConn = tls.Client(conn, tlsConfig)
+	} else if cliConf.EncryptMode == "aes" {
+		underlyingConn, err = crypto.NewCryptoStream(conn, []byte(cliConf.Aes.SecretKey))
+		if err != nil {
+			log.WithFields(log.Fields{"err": err}).Errorln("client hello,crypto.NewCryptoConn failed!")
+			return
+		}
+	} else if cliConf.EncryptMode == "none" {
+		underlyingConn = conn
+	} else {
+		log.WithFields(log.Fields{"encrypt_mode": cliConf.EncryptMode, "err": "invalid EncryptMode"}).Errorln("client hello failed!")
+		return
+	}
+	if cliConf.EnableCompress {
+		underlyingConn = transport.NewCompStream(underlyingConn)
 	}
 	smuxConfig := smux.DefaultConfig()
 	smuxConfig.MaxReceiveBuffer = 4194304
-	sess, err := smux.Client(conn, smuxConfig)
+	sess, err := smux.Client(underlyingConn, smuxConfig)
 	if err != nil {
+		underlyingConn.Close()
 		log.WithFields(log.Fields{"err": err}).Warnln("upgrade to smux.Client failed!")
 		return
 	}
@@ -87,35 +117,33 @@ func dialAndRun(transportMode string) {
 		log.WithFields(log.Fields{"err": err}).Warnln("sess.OpenStream failed!")
 		return
 	}
-	var ctl *Control
-	if cliConf.EncryptMode == "tls" {
-		tlsConfig, err := LoadTLSConfig([]string{cliConf.Tls.TrustedCert})
+	tunnels := make(map[string]msg.Tunnel, 0)
+	for name, tc := range cliConf.Tunnels {
+		localSchema, localHost, localPort, err := util.ParseAddr(tc.LocalAddr)
 		if err != nil {
-			log.WithFields(log.Fields{"trusted cert": cliConf.Tls.TrustedCert, "err": err}).Fatalln("load tls trusted cert failed!")
+			log.WithFields(log.Fields{"err": err}).Warnln("util.ParseLocalAddr failed!")
 			return
 		}
-		tlsConfig.ServerName = cliConf.Tls.ServerName
-		tlsConn := tls.Client(stream, tlsConfig)
-		ctl = NewControl(tlsConn, cliConf.EncryptMode, transportMode)
-	} else if cliConf.EncryptMode == "aes" {
-		cryptoConn, err := crypto.NewCryptoConn(stream, []byte(cliConf.Aes.SecretKey))
-		if err != nil {
-			log.WithFields(log.Fields{"err": err}).Errorln("client hello,crypto.NewCryptoConn failed!")
-			return
+		var tunnel msg.Tunnel
+		tunnel.HttpHostRewrite = tc.HttpHostRewrite
+		tunnel.Local.Schema = localSchema
+		tunnel.Local.Host = localHost
+		tunnel.Local.Port = uint16(localPort)
+		tunnel.Public.Schema = tc.Schema
+		tunnel.Public.Host = tc.Host
+		tunnel.Public.Port = tc.Port
+		if tunnel.Public.Host == "" && tunnel.Public.Port == 0 {
+			tunnel.Public.AllowReallocate = true
 		}
-		ctl = NewControl(cryptoConn, cliConf.EncryptMode, transportMode)
-	} else if cliConf.EncryptMode == "none" {
-		ctl = NewControl(stream, cliConf.EncryptMode, transportMode)
-	} else {
-		log.WithFields(log.Fields{"encrypt_mode": cliConf.EncryptMode, "err": "invalid EncryptMode"}).Errorln("client hello failed!")
-		return
+		tunnels[name] = tunnel
 	}
-	err = ctl.ClientHandShake()
+	ctl := NewControl(stream, cliConf.EncryptMode, transportMode, tunnels)
+	err = ctl.clientHandShake()
 	if err != nil {
 		log.WithFields(log.Fields{"err": err}).Warnln("control.ClientHandShake failed!")
 		return
 	}
-	log.WithFields(log.Fields{"client_id": ctl.ClientID.Hex()}).Infoln("server handshake success!")
+	log.WithFields(log.Fields{"client_id": ctl.ClientID.String(), "version": version.Version}).Infoln("server handshake success!")
 	err = ctl.ClientAddTunnels()
 	if err != nil {
 		log.WithFields(log.Fields{"err": err}).Warnln("control.ClientSyncTunnels failed!")
@@ -124,14 +152,48 @@ func dialAndRun(transportMode string) {
 	ctl.Run()
 }
 
-func main() {
-	configFile := flag.String("c", "../assets/client/config.yml", "path of config file")
+func Main() {
+	configFile := flag.String("c", "./config.yml", "path of config file")
 	flag.Parse()
 	err := LoadConfig(*configFile)
 	if err != nil {
 		rawLog.Fatalf("load config failed!err:=%v", err)
 	}
-	InitLog()
+	if cliConf.LogFile != "" {
+		f, err := os.OpenFile(cliConf.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0660)
+		if err != nil {
+			rawLog.Fatalf("open log file failed!err:=%v\n", err)
+			return
+		}
+		defer f.Close()
+		log.Init(cliConf.Debug, f)
+	} else {
+		log.Init(cliConf.Debug, nil)
+	}
+	raven.SetDSN(cliConf.DSN)
+
+	if cliConf.Durable && cliConf.DurableFile != "" {
+		idFile, err := os.OpenFile(cliConf.DurableFile, os.O_RDONLY|os.O_CREATE, os.ModePerm)
+		if err != nil {
+			rawLog.Fatalf("open log file %s failed!err:=%v\n", cliConf.DurableFile, err)
+			return
+		}
+		content, err := ioutil.ReadAll(idFile)
+		if err != nil {
+			idFile.Close()
+			rawLog.Fatalf("read id file content failed!err:=%v\n", err)
+		} else {
+			idFile.Close()
+		}
+		if len(content) > 0 {
+			u, err := uuid.FromString(string(content))
+			if err != nil {
+				log.WithFields(log.Fields{"err": err, "content": string(content)}).Warningln("unmarshal uuid failed!")
+			} else {
+				clientId = &u
+			}
+		}
+	}
 
 	var transportMode string
 	var transportRetry int
@@ -155,35 +217,8 @@ func main() {
 			}
 		}
 		dialAndRun(transportMode)
-		if time.Now().Sub(start) > time.Duration(pingTimeout*3) {
+		if time.Now().Sub(start) > time.Duration(cliConf.Health.TimeOut*int64(time.Second)*3) {
 			transportRetry = 0
 		}
 	}
-}
-
-type compStream struct {
-	conn net.Conn
-	w    *snappy.Writer
-	r    *snappy.Reader
-}
-
-func newCompStream(conn net.Conn) *compStream {
-	c := new(compStream)
-	c.conn = conn
-	c.w = snappy.NewBufferedWriter(conn)
-	c.r = snappy.NewReader(conn)
-	return c
-}
-func (c *compStream) Read(p []byte) (n int, err error) {
-	return c.r.Read(p)
-}
-
-func (c *compStream) Write(p []byte) (n int, err error) {
-	n, err = c.w.Write(p)
-	err = c.w.Flush()
-	return n, err
-}
-
-func (c *compStream) Close() error {
-	return c.conn.Close()
 }

@@ -1,4 +1,4 @@
-FROM golang:1.8-alpine
+FROM golang:1.8.1-alpine
 
 RUN apk add --update \
   ca-certificates \
@@ -6,7 +6,7 @@ RUN apk add --update \
 
 copy . /go/src/github.com/longXboy/lunnel
 
-RUN go install -race github.com/longXboy/lunnel/cmd/lunnelCli
+RUN CGO_ENABLED=0  go install -race github.com/longXboy/lunnel/cmd/lunnelCli
 
 ENTRYPOINT ["lunnelCli"]
 CMD ["-c","./config.yml"]

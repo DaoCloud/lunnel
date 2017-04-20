@@ -1,7 +1,7 @@
 FROM golang:1.8.1
 
 RUN apt-get update
-RUN apt-get install build-essential
+RUN apt-get install -y build-essential
 
 copy . /go/src/github.com/longXboy/lunnel
 

@@ -59,7 +59,7 @@ func AddTunnel(domain string, tunnel msg.Tunnel, clientId string) error {
 			ret = cmd.Err()
 			continue
 		}
-		url := fmt.Sprintf("%s/v1/daomonits/%s/tunnels", daoKeeperUrl, clientId)
+		url := fmt.Sprintf("%s/v2/daomonits/%s/tunnels", daoKeeperUrl, clientId)
 		var req PublishTunnelRequest
 		req.LocalAddr = tunnel.LocalAddr()
 		req.PublicUrl = tunnel.PublicAddr()

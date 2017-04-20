@@ -8,6 +8,7 @@ import (
 	"time"
 
 	log "github.com/Sirupsen/logrus"
+	"github.com/longXboy/lunnel/msg"
 )
 
 var httpClient *http.Client
@@ -38,17 +39,24 @@ func InitAuth(authUrl string) error {
 	return nil
 }
 
-func Auth(authToken string) (bool, error) {
-	resp, err := httpClient.PostForm(fmt.Sprintf("%s/v1/ngrokd/auth", daoKeeperUrl), url.Values{"user": {authToken}})
+func Auth(chello *msg.ControlClientHello) (bool, error) {
+	clientId := ""
+	if chello.ClientID != nil {
+		clientId = chello.ClientID.String()
+	}
+	resp, err := httpClient.PostForm(fmt.Sprintf("%s/v1/ngrokd/auth", daoKeeperUrl), url.Values{
+		"user": {chello.AuthToken},
+		"id":   {clientId},
+	})
 	if err != nil {
 		return false, fmt.Errorf("Request daokeeper error %s,%v", fmt.Sprintf("%s/v1/ngrokd/auth", daoKeeperUrl), err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == 200 {
-		log.WithFields(log.Fields{"authtoken": authToken}).Infoln("client auth token success!")
+		log.WithFields(log.Fields{"authtoken": chello.AuthToken}).Infoln("client auth token success!")
 		return true, nil
 	} else {
-		log.WithFields(log.Fields{"authtoken": authToken, "statuscode": resp.StatusCode}).Errorln("client auth token failed!")
+		log.WithFields(log.Fields{"authtoken": chello.AuthToken, "statuscode": resp.StatusCode}).Errorln("client auth token failed!")
 		return false, fmt.Errorf("Response daokeeper code %d,%v", resp.StatusCode)
 	}
 	return true, nil

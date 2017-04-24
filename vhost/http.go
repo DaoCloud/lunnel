@@ -12,37 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package transport
+package vhost
 
 import (
-	"io"
+	"fmt"
+	"time"
 
-	"github.com/klauspost/compress/snappy"
+	"github.com/longXboy/lunnel/version"
 )
 
-type CompStream struct {
-	conn io.ReadWriteCloser
-	w    *snappy.Writer
-	r    *snappy.Reader
-}
+const badGateWayTemplate string = "HTTP/1.1 502 Bad Gateway\r\nServer: lunnel/%s\r\nDate: %s\r\nContent-Length: 35\r\n\r\nBad GateWay: proxy_tunnel_not_found"
 
-func NewCompStream(conn io.ReadWriteCloser) *CompStream {
-	c := new(CompStream)
-	c.conn = conn
-	c.w = snappy.NewBufferedWriter(conn)
-	c.r = snappy.NewReader(conn)
-	return c
-}
-func (c *CompStream) Read(p []byte) (n int, err error) {
-	return c.r.Read(p)
-}
-
-func (c *CompStream) Write(p []byte) (n int, err error) {
-	n, err = c.w.Write(p)
-	err = c.w.Flush()
-	return n, err
-}
-
-func (c *CompStream) Close() error {
-	return c.conn.Close()
+func BadGateWayResp() string {
+	return fmt.Sprintf(badGateWayTemplate, version.Version, time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT"))
 }

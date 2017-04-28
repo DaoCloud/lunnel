@@ -34,8 +34,8 @@ import (
 	"golang.org/x/net/context"
 )
 
-var maxIdlePipes int = 2
-var maxStreams int = 6
+var maxIdlePipes uint64
+var maxStreams uint64
 
 var cleanInterval time.Duration = time.Second * 60
 
@@ -119,7 +119,7 @@ type Control struct {
 	tunnelLock *sync.Mutex
 
 	busyPipes  *pipeNode
-	idleCount  int
+	idleCount  uint64
 	idlePipes  *pipeNode
 	totalPipes int64
 	pipeAdd    chan *smux.Session
@@ -208,7 +208,7 @@ func (c *Control) clean() {
 		}
 		if busy.pipe.IsClosed() {
 			c.removeBusyNode(busy)
-		} else if busy.pipe.NumStreams() < maxStreams {
+		} else if uint64(busy.pipe.NumStreams()) < maxStreams {
 			c.removeBusyNode(busy)
 			c.addIdlePipe(busy.pipe)
 		}
@@ -250,6 +250,8 @@ func (c *Control) getIdleFast() (idle *pipeNode) {
 }
 
 func (c *Control) pipeManage() {
+	defer log.CapturePanic()
+
 	defer c.closePipes()
 	var available *smux.Session
 	ticker := time.NewTicker(cleanInterval)
@@ -281,7 +283,7 @@ func (c *Control) pipeManage() {
 							}
 						case p := <-c.pipeAdd:
 							if !p.IsClosed() {
-								if p.NumStreams() < maxStreams {
+								if uint64(p.NumStreams()) < maxStreams {
 									available = p
 									goto Available
 								} else {
@@ -310,7 +312,7 @@ func (c *Control) pipeManage() {
 			available = nil
 		case p := <-c.pipeAdd:
 			if !p.IsClosed() {
-				if p.NumStreams() < maxStreams {
+				if uint64(p.NumStreams()) < maxStreams {
 					c.addIdlePipe(p)
 				} else {
 					c.addBusyPipe(p)
@@ -369,6 +371,8 @@ func (c *Control) closePipes() {
 }
 
 func (c *Control) recvLoop() {
+	defer log.CapturePanic()
+
 	atomic.StoreUint64(&c.lastRead, uint64(time.Now().UnixNano()))
 	for {
 		mType, body, err := msg.ReadMsgWithoutTimeout(c.ctlConn)
@@ -401,6 +405,8 @@ func (c *Control) recvLoop() {
 }
 
 func (c *Control) writeLoop() {
+	defer log.CapturePanic()
+
 	lastWrite := time.Now()
 	idx := 0
 	for {
@@ -493,6 +499,8 @@ func proxyConn(userConn net.Conn, c *Control, tunnelName string) {
 
 //add or update tunnel stat
 func (c *Control) ServerAddTunnels(sstm *msg.AddTunnels) {
+	defer log.CapturePanic()
+
 	c.tunnelLock.Lock()
 	defer c.tunnelLock.Unlock()
 	for name, tunnel := range sstm.Tunnels {

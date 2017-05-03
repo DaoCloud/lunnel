@@ -1,3 +1,5 @@
+中文 | [English](README_en.md)
+
 # Lunnel
 lunnel 是一款简单易用的内网NAT穿越、反向代理软件，支持 HTTP, HTTPS, UDP, TCP、Unix socket 协议。
 
@@ -84,3 +86,5 @@ server_name:  example.com
 - [ ] 底层传输协议支持 QUIC
 - [ ] 提供 Dashboard 管理界面，开放 HTTP 接口
 - [ ] 集成raft一致性协议，服务端可横向伸缩扩展
+
+</details>

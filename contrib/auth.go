@@ -16,6 +16,7 @@ package contrib
 
 import (
 	"fmt"
+	"io/ioutil"
 	"net"
 	"net/http"
 	"net/url"
@@ -66,12 +67,13 @@ func Auth(chello *msg.ControlClientHello) (bool, error) {
 		return false, fmt.Errorf("Request daokeeper error %s,%v", fmt.Sprintf("%s/v1/ngrokd/auth", daoKeeperUrl), err)
 	}
 	defer resp.Body.Close()
+	content, _ := ioutil.ReadAll(resp.Body)
 	if resp.StatusCode == 200 {
-		log.WithFields(log.Fields{"authtoken": chello.AuthToken}).Infoln("client auth token success!")
+		log.WithFields(log.Fields{"authtoken": chello.AuthToken, "client_id": clientId}).Infoln("client auth token success!")
 		return true, nil
 	} else {
-		log.WithFields(log.Fields{"authtoken": chello.AuthToken, "statuscode": resp.StatusCode}).Errorln("client auth token failed!")
-		return false, fmt.Errorf("Response daokeeper code %d,%v", resp.StatusCode)
+		log.WithFields(log.Fields{"authtoken": chello.AuthToken, "statuscode": resp.StatusCode, "resp": string(content), "client_id": clientId}).Errorln("client auth token failed!")
+		return false, fmt.Errorf("Response daokeeper code %d,%v", resp.StatusCode, string(content))
 	}
 	return true, nil
 }

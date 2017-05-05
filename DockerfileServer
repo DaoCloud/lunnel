@@ -8,4 +8,4 @@ copy . /go/src/github.com/longXboy/lunnel
 RUN go install -race github.com/longXboy/lunnel/cmd/lunnelSer
 
 ENTRYPOINT ["lunnelSer"]
-CMD ["-c","./config.yml"]
+CMD ["-c","/go/config.yml"]

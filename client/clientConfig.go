@@ -55,10 +55,12 @@ type Config struct {
 	LogFile  string `yaml:"log_file,omitempty"`
 	ClientId string `yaml:"id,omitempty"`
 	//if EncryptMode is tls and ServerName is empty,ServerAddr can't be IP format
-	ServerAddr  string `yaml:"server_addr"`
-	Aes         Aes    `yaml:"aes,omitempty"`
-	Tls         Tls    `yaml:"tls,omitempty"`
-	EncryptMode string `yaml:"encrypt_mode,omitempty"`
+	ServerAddr    string `yaml:"server_addr"`
+	ServerUdpAddr string `yaml:"server_udp_addr"`
+	ServerTcpAddr string `yaml:"server_tcp_addr"`
+	Aes           Aes    `yaml:"aes,omitempty"`
+	Tls           Tls    `yaml:"tls,omitempty"`
+	EncryptMode   string `yaml:"encrypt_mode,omitempty"`
 	//none:no encryption
 	//aes:encrpted by aes
 	//tls:encrpted by tls,which is default
@@ -96,6 +98,14 @@ func LoadConfig(configDetail []byte, configType string) error {
 	}
 	if cliConf.ServerAddr == "" {
 		cliConf.ServerAddr = "example.com:8080"
+	}
+	if cliConf.ServerAddr != "" {
+		if cliConf.ServerUdpAddr == "" {
+			cliConf.ServerUdpAddr = cliConf.ServerAddr
+		}
+		if cliConf.ServerTcpAddr == "" {
+			cliConf.ServerTcpAddr = cliConf.ServerAddr
+		}
 	}
 	if cliConf.EncryptMode == "" {
 		if cliConf.Aes.SecretKey != "" {

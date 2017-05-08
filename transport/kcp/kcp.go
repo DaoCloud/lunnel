@@ -30,7 +30,7 @@ var (
 	SockBuf        = 4194304
 	dataShard      = 10
 	parityShard    = 3
-	udpSegmentSize = 1452
+	udpSegmentSize = 1400
 )
 
 func Dial(addr string) (net.Conn, error) {

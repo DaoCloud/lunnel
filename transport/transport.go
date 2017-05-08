@@ -88,6 +88,7 @@ func CreateConn(addr string, transportMode string, httpProxy string) (net.Conn, 
 				proxyConn.Close()
 				return nil, errors.Wrap(err, "http_proxy dial,read response")
 			}
+			resp.Body.Close()
 			if resp.StatusCode != 200 {
 				proxyConn.Close()
 				return nil, errors.New(fmt.Sprintf("http_proxy dial,response code not 200", resp.StatusCode))

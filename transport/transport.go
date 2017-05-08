@@ -18,10 +18,10 @@ import (
 	"bufio"
 	"encoding/base64"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/longXboy/lunnel/log"
 	"github.com/longXboy/lunnel/transport/kcp"
@@ -71,8 +71,10 @@ func CreateConn(addr string, transportMode string, httpProxy string) (net.Conn, 
 			if err != nil {
 				return nil, errors.Wrap(err, "http_proxy dial")
 			}
+			proxyConn.SetDeadline(time.Now().Add(time.Second * 20))
 			req, err := http.NewRequest("CONNECT", "http://"+addr, nil)
 			if err != nil {
+				proxyConn.Close()
 				return nil, errors.Wrap(err, "http_proxy dial,generate new req")
 			}
 			if parsedUrl.User != nil {
@@ -83,17 +85,15 @@ func CreateConn(addr string, transportMode string, httpProxy string) (net.Conn, 
 			req.Write(proxyConn)
 			resp, err := http.ReadResponse(bufio.NewReader(proxyConn), req)
 			if err != nil {
+				proxyConn.Close()
 				return nil, errors.Wrap(err, "http_proxy dial,read response")
 			}
-			content, err := ioutil.ReadAll(resp.Body)
-			if err != nil {
-				return nil, errors.Wrap(err, "http_proxy dial,ioutil read response")
-			}
-			resp.Body.Close()
 			if resp.StatusCode != 200 {
-				return nil, errors.New(fmt.Sprintf("http_proxy dial,response code not 200,body:%s", string(content)))
+				proxyConn.Close()
+				return nil, errors.New(fmt.Sprintf("http_proxy dial,response code not 200", resp.StatusCode))
 			}
-			log.WithFields(log.Fields{"content": string(content), "http_proxy": parsedUrl.Host}).Infoln("connect http_proxy success!")
+			log.WithFields(log.Fields{"http_proxy": parsedUrl.Host}).Infoln("connect http_proxy success!")
+			proxyConn.SetDeadline(time.Time{})
 			return proxyConn, nil
 		}
 	}

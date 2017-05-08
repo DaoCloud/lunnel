@@ -140,6 +140,12 @@ func LoadConfig(configDetail []byte, configType string) error {
 		}
 	}
 
+	if cliConf.HttpProxy != "" {
+		if cliConf.Transport == "kcp" {
+			return errors.Errorf("can't set transport mode kcp and http_proxy at same time")
+		}
+		cliConf.Transport = "tcp"
+	}
 	if cliConf.DSN == "" {
 		cliConf.DSN = "https://22946d46117c4bac9e680bf10597c564:e904ecd5c94e46c2aa9d15dcae90ac80@sentry.io/156456"
 	}

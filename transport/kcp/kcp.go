@@ -23,9 +23,9 @@ import (
 )
 
 var (
-	noDelay        = 0
+	noDelay        = 1
 	interval       = 40
-	resend         = 2
+	resend         = 0
 	noCongestion   = 1
 	SockBuf        = 4194304
 	dataShard      = 10

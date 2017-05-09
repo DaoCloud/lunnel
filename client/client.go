@@ -75,12 +75,14 @@ func LoadTLSConfig(rootCertPaths []string) (*tls.Config, error) {
 
 func dialServer(transportMode string) (conn net.Conn, err error) {
 	if transportMode == "tcp" {
+		log.WithFields(log.Fields{"server tcp address": cliConf.ServerTcpAddr}).Debugln("create conn to server")
 		conn, err = transport.CreateTCPConn(cliConf.ServerTcpAddr, cliConf.HttpProxy)
 		if err != nil {
 			log.WithFields(log.Fields{"server tcp address": cliConf.ServerTcpAddr, "err": err}).Warnln("create conn to server failed!")
 			return
 		}
 	} else {
+		log.WithFields(log.Fields{"server udp address": cliConf.ServerUdpAddr}).Debugln("create conn to server")
 		conn, err = transport.CreateKCPConn(cliConf.ServerUdpAddr)
 		if err != nil {
 			log.WithFields(log.Fields{"server udp address": cliConf.ServerUdpAddr, "err": err}).Warnln("create conn to server failed!")
@@ -103,12 +105,12 @@ func dialAndRun(transportMode string) {
 	chello := msg.ClientHello{EncryptMode: cliConf.EncryptMode, EnableCompress: cliConf.EnableCompress, Version: version.Version}
 	err = msg.WriteMsg(conn, msg.TypeClientHello, chello)
 	if err != nil {
-		log.WithFields(log.Fields{"server address": cliConf.ServerAddr, "err": err}).Warnln("write ControlClientHello failed!")
+		log.WithFields(log.Fields{"err": err}).Warnln("write ControlClientHello failed!")
 		return
 	}
 	mType, body, err := msg.ReadMsg(conn)
 	if err != nil {
-		log.WithFields(log.Fields{"server address": cliConf.ServerAddr, "err": err}).Warnln("read server hello failed!")
+		log.WithFields(log.Fields{"err": err}).Warnln("read server hello failed!")
 		return
 	}
 	if mType == msg.TypeError {

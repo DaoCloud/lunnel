@@ -34,8 +34,8 @@ var (
 )
 
 func Dial(addr string) (net.Conn, error) {
-	block, _ := kcp.NewNoneBlockCrypt([]byte{12})
-	kcpconn, err := kcp.DialWithOptions(addr, block, dataShard, parityShard)
+	//block, _ := kcp.NewNoneBlockCrypt([]byte{12})
+	kcpconn, err := kcp.DialWithOptions(addr, nil, dataShard, parityShard)
 	if err != nil {
 		return nil, errors.Wrap(err, "create kcpConn")
 	}
@@ -63,8 +63,8 @@ type Listener struct {
 }
 
 func Listen(addr string) (*Listener, error) {
-	block, _ := kcp.NewNoneBlockCrypt([]byte{12})
-	lis, err := kcp.ListenWithOptions(addr, block, dataShard, parityShard)
+	//block, _ := kcp.NewNoneBlockCrypt([]byte{12})
+	lis, err := kcp.ListenWithOptions(addr, nil, dataShard, parityShard)
 	if err != nil {
 		return nil, errors.Wrap(err, "kcp ListenWithOptions")
 	}

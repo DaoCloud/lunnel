@@ -41,7 +41,9 @@ type clientState struct {
 	EnableCompress bool
 	Version        string
 	Tunnels        map[string]tunnelState
-	TotalPipes     int64
+	TotalPipes     uint32
+	BusyPipes      uint32
+	IdlePipes      uint32
 }
 
 type tunnelState struct {
@@ -124,7 +126,7 @@ func clientQuery(c *gin.Context) {
 	ControlMapLock.RUnlock()
 	var client clientState
 	client.LastRead = atomic.LoadUint64(&client.LastRead)
-	client.TotalPipes = atomic.LoadInt64(&ctlClient.totalPipes)
+	client.TotalPipes = atomic.LoadUint32(&ctlClient.totalPipes)
 	client.Tunnels = make(map[string]tunnelState)
 	ctlClient.tunnelLock.Lock()
 	for _, v := range ctlClient.tunnels {
@@ -150,7 +152,9 @@ func clientsQuery(c *gin.Context) {
 	for _, c := range clients {
 		var client clientState
 		client.LastRead = atomic.LoadUint64(&c.lastRead)
-		client.TotalPipes = atomic.LoadInt64(&c.totalPipes)
+		client.TotalPipes = atomic.LoadUint32(&c.totalPipes)
+		client.BusyPipes = atomic.LoadUint32(&c.busyPipeCount)
+		client.IdlePipes = atomic.LoadUint32(&c.idlePipeCount)
 		client.Tunnels = make(map[string]tunnelState)
 		c.tunnelLock.Lock()
 		for _, v := range c.tunnels {

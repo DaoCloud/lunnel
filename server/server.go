@@ -57,10 +57,11 @@ func Main(configDetail []byte, configType string) {
 	if serverConf.NotifyEnable {
 		contrib.InitNotify(serverConf.NotifyUrl, serverConf.NotifyKey)
 	}
-	maxIdlePipes, err = strconv.ParseUint(serverConf.MaxIdlePipes, 10, 64)
+	temp, err := strconv.ParseInt(serverConf.MaxIdlePipes, 10, 64)
 	if err != nil {
 		log.Fatalln("max_idle_pipes must be unsigned integer")
 	}
+	maxIdlePipes = uint32(temp)
 	maxStreams, err = strconv.ParseUint(serverConf.MaxStreams, 10, 64)
 	if err != nil {
 		log.Fatalln("max_idle_pipes must be unsigned integer")

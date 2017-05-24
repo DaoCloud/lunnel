@@ -1,4 +1,4 @@
-FROM golang:1.8.2-alpine
+FROM golang:1.8.2
 
 RUN apt-get update
 RUN apt-get install -y build-essential

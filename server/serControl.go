@@ -476,6 +476,7 @@ func proxyConn(userConn net.Conn, c *Control, tunnelName string) {
 	if p == nil {
 		return
 	}
+	//todo:close stream friendly
 	stream, err := p.OpenStream(tunnelName)
 	if err != nil {
 		c.putPipe(p)

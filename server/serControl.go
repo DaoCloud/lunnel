@@ -155,8 +155,10 @@ func (c *Control) getPipe() *smux.Session {
 }
 
 func (c *Control) clean() *smux.Session {
-	if atomic.LoadUint32(&c.totalPipes) > maxIdlePipes {
-		log.WithFields(log.Fields{"total_pipe_count": atomic.LoadUint32(&c.totalPipes), "client_id": c.ClientID.String()}).Debugln("total pipe count")
+	if serverConf.Debug {
+		if atomic.LoadUint32(&c.totalPipes) > maxIdlePipes {
+			log.WithFields(log.Fields{"total_pipe_count": atomic.LoadUint32(&c.totalPipes), "client_id": c.ClientID.String()}).Debugln("total pipe count")
+		}
 	}
 	var deleted int64 = 0
 	front := c.busyPipes.Front()
@@ -238,6 +240,7 @@ func (c *Control) pipeManage() {
 	for {
 	Prepare:
 		if available == nil || available.IsClosed() {
+			atomic.AddUint32(&c.totalPipes, ^uint32(0))
 			available = c.getIdleFast()
 			if available == nil {
 				available = c.clean()

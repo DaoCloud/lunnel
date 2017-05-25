@@ -56,6 +56,7 @@ type Config struct {
 	NotifyUrl    string `yaml:"notify_url,omitempty"`
 	NotifyKey    string `yaml:"notify_key,omitempty"`
 	DSN          string `yaml:"dsn,omitempty"`
+	RelicLicense string `yaml:"relic,omitempty"`
 	Health       Health `yaml:"health,omitempty"`
 	MaxIdlePipes string `yaml:"max_idle_pipes,omitempty"`
 	MaxStreams   string `yaml:"max_streams,omitempty"`
@@ -105,6 +106,9 @@ func LoadConfig(configDetail []byte, configType string) error {
 	}
 	if serverConf.DSN == "" {
 		serverConf.DSN = "https://22946d46117c4bac9e680bf10597c564:e904ecd5c94e46c2aa9d15dcae90ac80@sentry.io/156456"
+	}
+	if serverConf.RelicLicense == "" {
+		serverConf.RelicLicense = "f1d68fb68369c635ff69c9046837b3c232117b2c"
 	}
 	if serverConf.Health.Interval == 0 {
 		serverConf.Health.Interval = 30

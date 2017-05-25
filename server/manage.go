@@ -47,6 +47,7 @@ type clientState struct {
 }
 
 type tunnelState struct {
+	ClientId string `json:",omitempty"`
 	Tunnel   msg.Tunnel
 	IsClosed bool
 }
@@ -158,7 +159,7 @@ func clientsQuery(c *gin.Context) {
 		client.Tunnels = make(map[string]tunnelState)
 		c.tunnelLock.Lock()
 		for _, v := range c.tunnels {
-			client.Tunnels[v.name] = tunnelState{Tunnel: v.tunnelConfig, IsClosed: v.isClosed}
+			client.Tunnels[v.name] = tunnelState{Tunnel: v.tunnelConfig, IsClosed: v.isClosed, ClientId: v.ctl.ClientID.String()}
 		}
 		c.tunnelLock.Unlock()
 		client.EnableCompress = c.enableCompress

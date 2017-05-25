@@ -32,6 +32,7 @@ import (
 	"github.com/longXboy/lunnel/transport"
 	"github.com/longXboy/lunnel/vhost"
 	"github.com/longXboy/smux"
+	"github.com/yvasiyarov/gorelic"
 )
 
 func Main(configDetail []byte, configType string) {
@@ -50,7 +51,16 @@ func Main(configDetail []byte, configType string) {
 	} else {
 		log.Init(serverConf.Debug, nil)
 	}
+
 	raven.SetDSN(serverConf.DSN)
+	agent := gorelic.NewAgent()
+	if serverConf.Debug {
+		agent.Verbose = true
+	}
+	agent.NewrelicName = "DAO_TUNNEL_PROD"
+	agent.NewrelicLicense = serverConf.RelicLicense
+	agent.Run()
+
 	if serverConf.AuthEnable {
 		contrib.InitAuth(serverConf.AuthUrl)
 	}

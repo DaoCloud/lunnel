@@ -240,7 +240,9 @@ func (c *Control) pipeManage() {
 	for {
 	Prepare:
 		if available == nil || available.IsClosed() {
-			atomic.AddUint32(&c.totalPipes, ^uint32(0))
+			if available != nil {
+				atomic.AddUint32(&c.totalPipes, ^uint32(0))
+			}
 			available = c.getIdleFast()
 			if available == nil {
 				available = c.clean()

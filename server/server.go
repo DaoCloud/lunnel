@@ -53,13 +53,15 @@ func Main(configDetail []byte, configType string) {
 	}
 
 	raven.SetDSN(serverConf.DSN)
-	agent := gorelic.NewAgent()
-	if serverConf.Debug {
-		agent.Verbose = true
+	if serverConf.RelicLicense != "" {
+		agent := gorelic.NewAgent()
+		if serverConf.Debug {
+			agent.Verbose = true
+		}
+		agent.NewrelicName = "DAO_LUNNEL_PROD"
+		agent.NewrelicLicense = serverConf.RelicLicense
+		agent.Run()
 	}
-	agent.NewrelicName = "DAO_TUNNEL_PROD"
-	agent.NewrelicLicense = serverConf.RelicLicense
-	agent.Run()
 
 	if serverConf.AuthEnable {
 		contrib.InitAuth(serverConf.AuthUrl)
